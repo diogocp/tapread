@@ -162,7 +162,7 @@ class CardDetailFragment : Fragment() {
                 sb.appendLine("Cryptogram type:  ${generateAc.cryptogramType}")
                 sb.appendLine("Cryptogram (AC):  ${generateAc.cryptogramHex ?: "N/A"}")
                 sb.appendLine("CID            :  ${generateAc.cidHex ?: "N/A"}")
-                sb.appendLine("CDA executed   :  ${if (card.cdaExecuted == true) "✅ Yes" else "❌ No"}")
+                sb.appendLine("CDA executed   :  ${yesNo(card.cdaExecuted == true)}")
                 sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
             } else {
                 sb.appendLine("GENERATE AC    :  Not available (card rejected or error)")

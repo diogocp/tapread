@@ -15,6 +15,7 @@ import java.util.Locale
 class EmvReader {
 
     private val log = LoggerFactory.getLogger("EmvReader")
+    private val secureRandom = SecureRandom()
 
     fun read(isoDep: IsoDep): ScanResult {
         val logger = ApduLogger()
@@ -267,7 +268,7 @@ class EmvReader {
                         "9F02", "9F03" -> "00".repeat(length)
                         "9F1A", "5F2A" -> "00".repeat(length)
                         "95" -> "00".repeat(length)
-                        "9A" -> today.padEnd(length * 2, '0').take(length * 2)
+                        "9A" -> today.take(length * 2).padEnd(length * 2, '0')
                         "9C" -> "00".repeat(length)
                         "9F37" -> randomHex(length)
                         else -> "00".repeat(length)
@@ -279,7 +280,7 @@ class EmvReader {
 
     private fun randomHex(length: Int): String {
         val bytes = ByteArray(length)
-        SecureRandom().nextBytes(bytes)
+        secureRandom.nextBytes(bytes)
         return HexUtil.toHex(bytes)
     }
 
