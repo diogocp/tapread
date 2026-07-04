@@ -25,6 +25,10 @@ data class CardData(
     val applicationLabel: String? = null,
     val contactlessStatus: ContactlessStatus = ContactlessStatus.ACTIVE,
     val contactlessStatusDetail: String? = null,
+    val aipHex: String? = null,
+    val supportsCda: Boolean? = null,
+    val cdaExecuted: Boolean? = null,
+    val generateAcResult: GenerateAcResult? = null,
     // CPLC
     val cplcData: String? = null,
     // Wallet/tokenization
@@ -72,6 +76,15 @@ data class TransactionInfo(
     val transactionType: String?,
     val time: String? = null,           // Transaction time HH:mm:ss
     val cryptogramType: String? = null  // ARQC, TC, AAC
+)
+
+data class GenerateAcResult(
+    val cryptogramType: String,
+    val cryptogramHex: String?,
+    val cidHex: String?,
+    val cdaSignatureIncluded: Boolean,
+    val atcHex: String?,
+    val rawResponseHex: String?
 )
 
 enum class ContactlessStatus {

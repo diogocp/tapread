@@ -7,6 +7,7 @@ import com.github.devnied.emvnfccard.parser.EmvTemplate
 import com.tapread.nfc.model.*
 import com.tapread.nfc.util.HexUtil
 import org.slf4j.LoggerFactory
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -97,6 +98,17 @@ class EmvReader {
 
         // CPLC data
         val cplcData = extractCplc(emvCard)
+        val aipHex = extractAip(logger)
+        val supportsCda = aipHex?.let {
+            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20 != 0)
+        }
+        val generateAcResult = try {
+            performGenerateAc(provider, extractTagValueFromLog(logger, "8C"))
+        } catch (e: Exception) {
+            log.warn("GENERATE AC failed: {}", e.message)
+            null
+        }
+        val cdaExecuted = generateAcResult?.cdaSignatureIncluded
 
         // Contactless status
         val status = if (pan != null) ContactlessStatus.ACTIVE else detectContactlessStatus(logger)
@@ -120,6 +132,10 @@ class EmvReader {
             cplcData = cplcData,
             contactlessStatus = status,
             contactlessStatusDetail = statusDetail,
+            aipHex = aipHex,
+            supportsCda = supportsCda,
+            cdaExecuted = cdaExecuted,
+            generateAcResult = generateAcResult,
             walletType = walletInfo.first,
             isTokenized = walletInfo.second
         )
@@ -155,6 +171,190 @@ class EmvReader {
             reflectField<Any>(cplc, "icPersonalizer")?.let { sb.appendLine("IC Personalizer   :  $it") }
             if (sb.isEmpty()) null else sb.toString().trimEnd()
         } catch (_: Exception) { null }
+    }
+
+    private fun extractAip(logger: ApduLogger): String? {
+        return extractTagValueFromLog(logger, "82")?.takeIf { it.length >= 4 }?.take(4)
+    }
+
+    private fun parseCdol(cdolHex: String): List<Pair<String, Int>> {
+        val clean = cdolHex.replace(" ", "").uppercase()
+        val result = mutableListOf<Pair<String, Int>>()
+        var pos = 0
+
+        while (pos + 4 <= clean.length) {
+            val (tag, nextPos) = readTag(clean, pos) ?: break
+            if (nextPos + 2 > clean.length) break
+            val length = clean.substring(nextPos, nextPos + 2).toIntOrNull(16) ?: break
+            result.add(tag to length)
+            pos = nextPos + 2
+        }
+
+        return result
+    }
+
+    private fun performGenerateAc(provider: IsoDepProvider, cdolHex: String?): GenerateAcResult? {
+        if (cdolHex.isNullOrBlank()) {
+            log.info("No CDOL1 found; skipping GENERATE AC")
+            return null
+        }
+
+        val cdol = parseCdol(cdolHex)
+        if (cdol.isEmpty()) {
+            log.info("CDOL1 could not be parsed; skipping GENERATE AC")
+            return null
+        }
+
+        val dataHex = buildGenerateAcData(cdol)
+        val dataBytes = hexToBytes(dataHex)
+        val command = byteArrayOf(
+            0x80.toByte(),
+            0xAE.toByte(),
+            0x80.toByte(),
+            0x00.toByte(),
+            dataBytes.size.toByte()
+        ) + dataBytes + byteArrayOf(0x00)
+
+        val response = provider.transceive(command)
+        if (response.size < 2) return null
+
+        val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
+            (response[response.size - 1].toInt() and 0xFF)
+        if (sw != 0x9000) {
+            log.info("GENERATE AC rejected with SW={}", "%04X".format(sw))
+            return null
+        }
+
+        val cidHexFromTlv = extractTagValue(response, "9F27")
+        val acHexFromTlv = extractTagValue(response, "9F26")
+        val atcHexFromTlv = extractTagValue(response, "9F36")
+        val template80 = extractTagValue(response, "80")
+
+        val cidHex = cidHexFromTlv ?: template80?.takeIf { it.length >= 2 }?.substring(0, 2)
+        val atcHex = atcHexFromTlv ?: template80?.takeIf { it.length >= 6 }?.substring(2, 6)
+        val cryptogramHex = acHexFromTlv ?: template80?.takeIf { it.length >= 22 }?.substring(6, 22)
+
+        val cidValue = cidHex?.toIntOrNull(16) ?: return null
+        val cryptogramType = when (cidValue and 0xC0) {
+            0x00 -> "AAC"
+            0x40 -> "TC"
+            0x80 -> "ARQC"
+            else -> "RFU"
+        }
+
+        return GenerateAcResult(
+            cryptogramType = cryptogramType,
+            cryptogramHex = cryptogramHex,
+            cidHex = cidHex,
+            cdaSignatureIncluded = cidValue and 0x20 != 0,
+            atcHex = atcHex,
+            rawResponseHex = HexUtil.toHex(response)
+        )
+    }
+
+    private fun buildGenerateAcData(cdol: List<Pair<String, Int>>): String {
+        val today = SimpleDateFormat("yyMMdd", Locale.US).format(Date())
+        return buildString {
+            for ((tag, length) in cdol) {
+                append(
+                    when (tag) {
+                        "9F02", "9F03" -> "00".repeat(length)
+                        "9F1A", "5F2A" -> "00".repeat(length)
+                        "95" -> "00".repeat(length)
+                        "9A" -> today.padEnd(length * 2, '0').take(length * 2)
+                        "9C" -> "00".repeat(length)
+                        "9F37" -> randomHex(length)
+                        else -> "00".repeat(length)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun randomHex(length: Int): String {
+        val bytes = ByteArray(length)
+        SecureRandom().nextBytes(bytes)
+        return HexUtil.toHex(bytes)
+    }
+
+    private fun extractTagValueFromLog(logger: ApduLogger, tagHex: String): String? {
+        for (entry in logger.entries) {
+            extractTagValue(entry.response, tagHex)?.let { return it }
+        }
+        return null
+    }
+
+    private fun extractTagValue(response: ByteArray, tagHex: String): String? {
+        return findTagValue(HexUtil.toHex(response), tagHex.uppercase())
+    }
+
+    private fun findTagValue(hexResponse: String, tagHex: String): String? {
+        val clean = hexResponse.replace(" ", "").uppercase()
+        val data = if (clean.length >= 4) clean.dropLast(4) else clean
+        return findTagValueInTlv(data, tagHex)
+    }
+
+    private fun findTagValueInTlv(hex: String, tagHex: String): String? {
+        var pos = 0
+        while (pos + 4 <= hex.length) {
+            val (tag, nextPos) = readTag(hex, pos) ?: break
+            val (length, valueStart) = readLength(hex, nextPos) ?: break
+            val valueEnd = valueStart + length * 2
+            if (valueEnd > hex.length) break
+
+            val value = hex.substring(valueStart, valueEnd)
+            if (tag == tagHex) return value
+            if (isConstructedTag(tag)) {
+                findTagValueInTlv(value, tagHex)?.let { return it }
+            }
+            pos = valueEnd
+        }
+        return null
+    }
+
+    private fun readTag(hex: String, start: Int): Pair<String, Int>? {
+        if (start + 2 > hex.length) return null
+        val firstByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
+        if ((firstByte and 0x1F) != 0x1F) {
+            return hex.substring(start, start + 2) to (start + 2)
+        }
+
+        var pos = start + 2
+        while (pos + 2 <= hex.length) {
+            val nextByte = hex.substring(pos, pos + 2).toIntOrNull(16) ?: return null
+            pos += 2
+            if (nextByte and 0x80 == 0) {
+                return hex.substring(start, pos) to pos
+            }
+        }
+        return null
+    }
+
+    private fun readLength(hex: String, start: Int): Pair<Int, Int>? {
+        if (start + 2 > hex.length) return null
+        val lenByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
+        return when {
+            lenByte and 0x80 == 0 -> lenByte to (start + 2)
+            lenByte == 0x81 -> {
+                if (start + 4 > hex.length) null
+                else (hex.substring(start + 2, start + 4).toIntOrNull(16) ?: return null) to (start + 4)
+            }
+            lenByte == 0x82 -> {
+                if (start + 6 > hex.length) null
+                else (hex.substring(start + 2, start + 6).toIntOrNull(16) ?: return null) to (start + 6)
+            }
+            else -> null
+        }
+    }
+
+    private fun isConstructedTag(tag: String): Boolean {
+        return tag.length >= 2 && (((tag.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20) != 0)
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = hex.replace(" ", "").uppercase()
+        if (clean.isEmpty()) return byteArrayOf()
+        return clean.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     }
 
     // ── Scheme detection ──

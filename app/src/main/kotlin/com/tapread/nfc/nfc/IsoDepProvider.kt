@@ -52,6 +52,7 @@ class IsoDepProvider(
             0xB2 -> "READ RECORD"
             0xCA -> "GET DATA"
             0xA8 -> "GET PROCESSING OPTIONS"
+            0xAE -> "GENERATE AC"
             0x88 -> "INTERNAL AUTHENTICATE"
             0x82 -> "EXTERNAL AUTHENTICATE"
             0x84 -> "GET CHALLENGE"

@@ -142,6 +142,34 @@ class CardDetailFragment : Fragment() {
         } else sb.appendLine("No AIDs found")
         sb.appendLine()
 
+        if (!card.aipHex.isNullOrBlank() || card.generateAcResult != null || card.supportsCda != null) {
+            sb.appendLine("─── Offline Authentication ──────")
+            if (!card.aipHex.isNullOrBlank()) {
+                val aipHex = card.aipHex.uppercase()
+                sb.appendLine("AIP            :  $aipHex")
+                sb.appendLine("  SDA supported:  ${yesNo(aipFlagSet(aipHex, 0x80))}")
+                sb.appendLine("  DDA supported:  ${yesNo(aipFlagSet(aipHex, 0x40))}")
+                sb.appendLine("  CDA supported:  ${yesNo(card.supportsCda == true)}")
+            } else {
+                sb.appendLine("AIP            :  N/A")
+                sb.appendLine("  CDA supported:  ${yesNo(card.supportsCda == true)}")
+            }
+            sb.appendLine()
+
+            sb.appendLine("─── GENERATE AC Result ──────────")
+            val generateAc = card.generateAcResult
+            if (generateAc != null) {
+                sb.appendLine("Cryptogram type:  ${generateAc.cryptogramType}")
+                sb.appendLine("Cryptogram (AC):  ${generateAc.cryptogramHex ?: "N/A"}")
+                sb.appendLine("CID            :  ${generateAc.cidHex ?: "N/A"}")
+                sb.appendLine("CDA executed   :  ${if (card.cdaExecuted == true) "✅ Yes" else "❌ No"}")
+                sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
+            } else {
+                sb.appendLine("GENERATE AC    :  Not available (card rejected or error)")
+            }
+            sb.appendLine()
+        }
+
         // CVM List — extract tag 8E from APDU log
         val cvmHex = extractTagFromApdu(apduLog, "8E")
         if (cvmHex != null) {
@@ -195,6 +223,14 @@ class CardDetailFragment : Fragment() {
         val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
         Snackbar.make(requireView(), "$label copied to clipboard", Snackbar.LENGTH_SHORT).show()
+    }
+
+    private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
+    private fun aipFlagSet(aipHex: String, mask: Int): Boolean {
+        if (aipHex.length < 2) return false
+        val byte1 = aipHex.substring(0, 2).toIntOrNull(16) ?: return false
+        return byte1 and mask != 0
     }
 
     /** Extract a specific EMV tag value from the APDU log responses */

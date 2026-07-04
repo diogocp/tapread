@@ -186,6 +186,29 @@ object TlvParser {
         return sb.toString().trimEnd()
     }
 
+    /** Decode AIP (Application Interchange Profile) */
+    fun decodeAip(hex: String): String {
+        val clean = hex.replace(" ", "").uppercase()
+        if (clean.length < 4) return "Raw: $hex"
+
+        val byte1 = clean.substring(0, 2).toIntOrNull(16) ?: return "Raw: $hex"
+        val byte2 = clean.substring(2, 4).toIntOrNull(16) ?: return "Raw: $hex"
+
+        val lines = listOf(
+            "SDA supported: ${yesNo(byte1 and 0x80 != 0)}",
+            "DDA supported: ${yesNo(byte1 and 0x40 != 0)}",
+            "Cardholder verification supported: ${yesNo(byte1 and 0x20 != 0)}",
+            "Terminal risk management: ${yesNo(byte1 and 0x10 != 0)}",
+            "Issuer authentication supported: ${yesNo(byte1 and 0x08 != 0)}",
+            "CDA supported: ${yesNo(byte1 and 0x20 != 0)}",
+            "EMV mode supported (contactless): ${yesNo(byte2 and 0x80 != 0)}"
+        )
+
+        return lines.joinToString("\n")
+    }
+
+    private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
     // EMV tag dictionary
     private val EMV_TAGS = mapOf(
         "6F" to "FCI Template",
