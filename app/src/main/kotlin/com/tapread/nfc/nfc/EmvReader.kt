@@ -100,7 +100,7 @@ class EmvReader {
         val cplcData = extractCplc(emvCard)
         val aipHex = extractAip(logger)
         val supportsCda = aipHex?.let {
-            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20 != 0)
+            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x01 != 0)
         }
         val generateAcResult = try {
             performGenerateAc(provider, extractTagValueFromLog(logger, "8C"))
@@ -174,7 +174,13 @@ class EmvReader {
     }
 
     private fun extractAip(logger: ApduLogger): String? {
-        return extractTagValueFromLog(logger, "82")?.takeIf { it.length >= 4 }?.take(4)
+        extractTagValueFromLog(logger, "82")?.takeIf { it.length >= 4 }?.let { return it.take(4) }
+        for (entry in logger.entries) {
+            if (entry.label != "GET PROCESSING OPTIONS") continue
+            val template80 = extractTagValue(entry.response, "80") ?: continue
+            if (template80.length >= 4) return template80.substring(0, 4)
+        }
+        return null
     }
 
     private fun parseCdol(cdolHex: String): List<Pair<String, Int>> {
