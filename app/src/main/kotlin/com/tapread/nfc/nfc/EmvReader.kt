@@ -139,6 +139,11 @@ class EmvReader {
         // Re-derive CDOL1 from the full pool: supplemental reads are now in the log.
         val cdol1Hex = extractTagValueFromLog(logger, "8C")
 
+        // Read-only ATC counters via GET DATA — these do NOT increment the ATC, so they run
+        // regardless of the active-probing setting.
+        val atc = performGetData(provider, "9F36")
+        val lastOnlineAtc = performGetData(provider, "9F13")
+
         // ── Active crypto probes (opt-in; may increment ATC / issuer counters) ──
         val generateAcAttempt: GenerateAcAttempt
         val internalAuthAttempt: InternalAuthAttempt
@@ -240,8 +245,36 @@ class EmvReader {
             internalAuthDebug = internalAuthAttempt.debugMessage,
             walletType = walletInfo.first,
             isTokenized = walletInfo.second,
+            atc = atc,
+            lastOnlineAtc = lastOnlineAtc,
             emvDiagnostics = diagnostics
         )
+    }
+
+    /**
+     * Read a primitive data object with GET DATA (`80 CA <tag> 00`). This is a read-only
+     * command — for counters like the ATC (9F36) it returns the current value WITHOUT
+     * incrementing it, so it is safe to call outside active probing. Returns the tag's
+     * value hex, or null if the card rejects it or it isn't present.
+     */
+    private fun performGetData(provider: IsoDepProvider, tagHex: String): String? {
+        return try {
+            val tagBytes = hexToBytes(tagHex)
+            if (tagBytes.size != 2) return null
+            val command = byteArrayOf(
+                0x80.toByte(), 0xCA.toByte(), tagBytes[0], tagBytes[1], 0x00.toByte()
+            )
+            val response = provider.transceive(command)
+            if (response.size < 2) return null
+            val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
+                (response[response.size - 1].toInt() and 0xFF)
+            if (sw != 0x9000) return null
+            // Response is the primitive TLV for the tag itself, e.g. 9F36 02 001A.
+            TlvParser.findValue(HexUtil.toHex(response), tagHex)
+        } catch (e: Exception) {
+            log.warn("GET DATA {} failed: {}", tagHex, e.message)
+            null
+        }
     }
 
     /** AID (tag 4F / DF Name 84) of the last AID-bearing SELECT — the active app for follow-ups. */

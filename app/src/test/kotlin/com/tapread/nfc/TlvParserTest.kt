@@ -78,6 +78,11 @@ class TlvParserTest {
         assertNull(TlvParser.findValue("70045F3401019000", "8C"))
     }
 
+    @Test fun findValue_getDataAtcResponse() {
+        // GET DATA 9F36 returns the primitive TLV: 9F36 02 <ATC> + SW
+        assertEquals("001A", TlvParser.findValue("9F3602001A9000", "9F36"))
+    }
+
     @Test fun findValue_doesNotDescendIntoPrimitiveValues() {
         // A primitive Track-2 (57) whose value bytes merely LOOK like tag 8C must NOT match.
         val record = "57048C039F379000"   // 57 04 { 8C 03 9F 37 }, SW 9000

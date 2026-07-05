@@ -213,6 +213,20 @@ class CardDetailFragment : Fragment() {
             }
         }
 
+        // ATC counters (read-only GET DATA — no increment)
+        if (card.atc != null || card.lastOnlineAtc != null) {
+            sb.appendLine("─── ATC Counters (GET DATA) ──────")
+            sb.appendLine("ATC (9F36)        :  ${card.atc ?: "N/A"}")
+            sb.appendLine("Last online (9F13):  ${card.lastOnlineAtc ?: "N/A"}")
+            val cur = card.atc?.toIntOrNull(16)
+            val last = card.lastOnlineAtc?.toIntOrNull(16)
+            if (cur != null && last != null && cur >= last) {
+                sb.appendLine("Offline since last:  ${cur - last} transaction(s)")
+            }
+            sb.appendLine("(read-only — GET DATA does not increment the ATC)")
+            sb.appendLine()
+        }
+
         // EMV Diagnostics (AIP/PDOL/AFL decode, full-AFL-read verification, verdict)
         card.emvDiagnostics?.let { appendDiagnostics(sb, it) }
 

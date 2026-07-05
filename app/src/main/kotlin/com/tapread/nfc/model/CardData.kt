@@ -43,6 +43,9 @@ data class CardData(
     // Wallet/tokenization
     val walletType: String? = null,       // "Apple Pay", "Google Pay", "Samsung Pay", etc.
     val isTokenized: Boolean = false,     // True if DPAN detected
+    // ATC counters read via GET DATA (read-only — does NOT increment the ATC)
+    val atc: String? = null,              // 9F36 Application Transaction Counter (current)
+    val lastOnlineAtc: String? = null,    // 9F13 Last Online ATC Register
     // Structured EMV diagnostics (AIP/PDOL/AFL decode, full-AFL-read verification, verdict)
     val emvDiagnostics: EmvDiagnostics? = null
 ) {
