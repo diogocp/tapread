@@ -24,6 +24,13 @@ class EmvReader {
         val debugMessage: String? = null
     )
 
+    private data class InternalAuthAttempt(
+        val result: InternalAuthResult? = null,
+        val attempted: Boolean,
+        val statusWordHex: String? = null,
+        val debugMessage: String? = null
+    )
+
     fun read(isoDep: IsoDep): ScanResult {
         val logger = ApduLogger()
         val provider = IsoDepProvider(logger)
@@ -110,6 +117,9 @@ class EmvReader {
         val supportsCda = aipHex?.let {
             it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x02 != 0)
         }
+        val supportsDda = aipHex?.let {
+            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x40 != 0)
+        }
         val cdol1Hex = extractTagValueFromLog(logger, "8C")
         val generateAcAttempt = try {
             performGenerateAc(provider, cdol1Hex)
@@ -118,6 +128,23 @@ class EmvReader {
             GenerateAcAttempt(
                 cdol1Present = !cdol1Hex.isNullOrBlank(),
                 debugMessage = e.message ?: "Unexpected error during GENERATE AC"
+            )
+        }
+        val ddolHex = extractTagValueFromLog(logger, "9F49")
+        val internalAuthAttempt = if (supportsDda == true) {
+            try {
+                performInternalAuthenticate(provider, ddolHex)
+            } catch (e: Exception) {
+                log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
+                InternalAuthAttempt(
+                    attempted = true,
+                    debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
+                )
+            }
+        } else {
+            InternalAuthAttempt(
+                attempted = false,
+                debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else null
             )
         }
         val generateAcResult = generateAcAttempt.result
@@ -147,11 +174,15 @@ class EmvReader {
             contactlessStatusDetail = statusDetail,
             aipHex = aipHex,
             supportsCda = supportsCda,
+            supportsDda = supportsDda,
             cdaExecuted = cdaExecuted,
             generateAcResult = generateAcResult,
             generateAcStatusWord = generateAcAttempt.statusWordHex,
             generateAcDebug = generateAcAttempt.debugMessage,
             cdol1Present = generateAcAttempt.cdol1Present,
+            internalAuthResult = internalAuthAttempt.result,
+            internalAuthStatusWord = internalAuthAttempt.statusWordHex,
+            internalAuthDebug = internalAuthAttempt.debugMessage,
             walletType = walletInfo.first,
             isTokenized = walletInfo.second
         )
@@ -294,6 +325,68 @@ class EmvReader {
                 rawResponseHex = HexUtil.toHex(response)
             ),
             cdol1Present = true,
+            statusWordHex = swHex
+        )
+    }
+
+    private fun performInternalAuthenticate(provider: IsoDepProvider, ddolHex: String?): InternalAuthAttempt {
+        // Build the challenge data from DDOL, or fall back to a 4-byte unpredictable number
+        val fallbackNonce = randomHex(4)
+        val dataHex = if (!ddolHex.isNullOrBlank()) {
+            val ddol = parseCdol(ddolHex)
+            if (ddol.isEmpty()) fallbackNonce
+            else buildString {
+                for ((tag, length) in ddol) {
+                    append(if (tag == "9F37") randomHex(length) else "00".repeat(length))
+                }
+            }
+        } else {
+            fallbackNonce
+        }
+
+        val dataBytes = hexToBytes(dataHex)
+        val command = byteArrayOf(
+            0x00.toByte(), 0x88.toByte(), 0x00.toByte(), 0x00.toByte(),
+            dataBytes.size.toByte()
+        ) + dataBytes + byteArrayOf(0x00)
+
+        val response = provider.transceive(command)
+        if (response.size < 2) {
+            return InternalAuthAttempt(
+                attempted = true,
+                debugMessage = "Card returned no INTERNAL AUTHENTICATE status word"
+            )
+        }
+
+        val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
+            (response[response.size - 1].toInt() and 0xFF)
+        val swHex = "%04X".format(sw)
+
+        if (sw != 0x9000) {
+            val reason = when (sw) {
+                0x6985 -> "Conditions not satisfied"
+                0x6D00 -> "Instruction not supported"
+                0x6984 -> "Invalid data"
+                else -> "Card rejected INTERNAL AUTHENTICATE"
+            }
+            log.info("INTERNAL AUTHENTICATE rejected with SW={}", swHex)
+            return InternalAuthAttempt(
+                attempted = true,
+                statusWordHex = swHex,
+                debugMessage = reason
+            )
+        }
+
+        val sdadHex = extractTagValue(response, "9F4B")
+
+        return InternalAuthAttempt(
+            result = InternalAuthResult(
+                challengeHex = dataHex,
+                sdadHex = sdadHex,
+                statusWordHex = swHex,
+                rawResponseHex = HexUtil.toHex(response)
+            ),
+            attempted = true,
             statusWordHex = swHex
         )
     }

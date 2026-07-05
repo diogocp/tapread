@@ -32,6 +32,11 @@ data class CardData(
     val generateAcStatusWord: String? = null,
     val generateAcDebug: String? = null,
     val cdol1Present: Boolean? = null,
+    // DDA / INTERNAL AUTHENTICATE
+    val supportsDda: Boolean? = null,
+    val internalAuthResult: InternalAuthResult? = null,
+    val internalAuthStatusWord: String? = null,
+    val internalAuthDebug: String? = null,
     // CPLC
     val cplcData: String? = null,
     // Wallet/tokenization
@@ -87,6 +92,13 @@ data class GenerateAcResult(
     val cidHex: String?,
     val cdaSignatureIncluded: Boolean,
     val atcHex: String?,
+    val rawResponseHex: String?
+)
+
+data class InternalAuthResult(
+    val challengeHex: String,
+    val sdadHex: String?,
+    val statusWordHex: String?,
     val rawResponseHex: String?
 )
 

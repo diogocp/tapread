@@ -142,7 +142,7 @@ class CardDetailFragment : Fragment() {
         } else sb.appendLine("No AIDs found")
         sb.appendLine()
 
-        if (!card.aipHex.isNullOrBlank() || card.generateAcResult != null || card.supportsCda != null) {
+        if (!card.aipHex.isNullOrBlank() || card.generateAcResult != null || card.supportsCda != null || card.supportsDda != null) {
             sb.appendLine("─── Offline Authentication ──────")
             if (!card.aipHex.isNullOrBlank()) {
                 val aipHex = card.aipHex.uppercase()
@@ -179,6 +179,27 @@ class CardDetailFragment : Fragment() {
                 }
             }
             sb.appendLine()
+
+            if (card.supportsDda != null) {
+                sb.appendLine("─── INTERNAL AUTHENTICATE (DDA) ─")
+                sb.appendLine("DDA supported  :  ${yesNo(card.supportsDda == true)}")
+                val internalAuth = card.internalAuthResult
+                if (internalAuth != null) {
+                    sb.appendLine("DDA attempted  :  Yes")
+                    sb.appendLine("Challenge sent :  ${internalAuth.challengeHex}")
+                    sb.appendLine("SDAD received  :  ${internalAuth.sdadHex ?: "N/A"}")
+                    sb.appendLine("Status word    :  ${formatStatusWord(internalAuth.statusWordHex)}")
+                } else {
+                    sb.appendLine("DDA attempted  :  ${yesNo(card.supportsDda == true)}")
+                    if (!card.internalAuthStatusWord.isNullOrBlank()) {
+                        sb.appendLine("Status word    :  ${formatStatusWord(card.internalAuthStatusWord)}")
+                    }
+                    if (!card.internalAuthDebug.isNullOrBlank()) {
+                        sb.appendLine("Reason         :  ${card.internalAuthDebug}")
+                    }
+                }
+                sb.appendLine()
+            }
         }
 
         // CVM List — extract tag 8E from APDU log
