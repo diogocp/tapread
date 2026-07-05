@@ -61,6 +61,13 @@ object CaPublicKeyStore {
         return keys.firstOrNull { it.rid.equals(r, true) && it.index.equals(i, true) }
     }
 
+    /** All keys for a (RID, index) — a scheme can publish more than one under the same index. */
+    fun findAll(keys: List<CaPublicKey>, rid: String, index: String): List<CaPublicKey> {
+        val r = clean(rid)
+        val i = clean(index)
+        return keys.filter { it.rid.equals(r, true) && it.index.equals(i, true) }
+    }
+
     /**
      * The EMV CA public key check value: SHA-1 over RID(5) ‖ CA Index(1) ‖ Modulus ‖ Exponent,
      * as uppercase hex. This is the value the schemes publish next to each key.

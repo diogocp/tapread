@@ -181,8 +181,16 @@ class EmvCdaVerifierTest {
         val result = EmvCdaVerifier.verify(chain.tags, listOf(badChecksumKey))
         assertFalse(result.overallVerified)
         assertTrue(result.steps.any {
-            it.name == "CA public key" && it.status.name == "FAIL" && it.detail!!.contains("Checksum")
+            it.name == "CA public key" && it.status.name == "FAIL" && it.detail!!.contains("checksum", ignoreCase = true)
         })
+    }
+
+    @Test fun triesAllCandidatesUnderSameIndex() {
+        val chain = buildGenuineChain()
+        // A decoy key sharing the RID+index that cannot recover the issuer cert, listed first.
+        val decoy = CaPublicKey(chain.caKey.rid, chain.caKey.index, HexUtil.toHex(genKey(2048).modBytes), "010001")
+        val result = EmvCdaVerifier.verify(chain.tags, listOf(decoy, chain.caKey))
+        assertTrue(result.summary, result.overallVerified)
     }
 
     @Test fun verifiesGenuineChainWithMatchingChecksum() {

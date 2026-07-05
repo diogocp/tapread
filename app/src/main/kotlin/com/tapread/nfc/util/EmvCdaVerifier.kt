@@ -62,65 +62,65 @@ object EmvCdaVerifier {
                 "Missing RID (from AID) or CA Public Key Index (tag 8F)"))
             return done(steps, rid, caIndex, "Cannot verify: CA key selection data missing.")
         }
-        val caKey = CaPublicKeyStore.find(caKeys, rid, caIndex)
-        if (caKey == null) {
+        // A scheme may publish more than one key under the same (RID, index); try each.
+        val candidates = CaPublicKeyStore.findAll(caKeys, rid, caIndex)
+        if (candidates.isEmpty()) {
             steps.add(CdaStep("CA public key", CdaStepStatus.SKIPPED,
                 "No CA public key configured for RID $rid index $caIndex — add it to ca_public_keys.json"))
             return done(steps, rid, caIndex, "Cannot verify: CA public key for RID $rid index $caIndex not configured.")
         }
-        val caMod = hexToBytes(caKey.modulusHex)
-        val caExp = hexToBytes(caKey.exponentHex)
-        if (caMod.isEmpty() || caExp.isEmpty()) {
+        // Drop candidates with invalid hex or a checksum mismatch (mistyped modulus/exponent).
+        val usable = candidates.filter { key ->
+            hexToBytes(key.modulusHex).isNotEmpty() && hexToBytes(key.exponentHex).isNotEmpty() &&
+                CaPublicKeyStore.verifyChecksum(key) != CaPublicKeyStore.ChecksumResult.MISMATCH
+        }
+        if (usable.isEmpty()) {
             steps.add(CdaStep("CA public key", CdaStepStatus.FAIL,
-                "Configured CA public key for RID $rid index $caIndex has invalid modulus/exponent hex"))
+                "Configured CA key(s) for RID $rid index $caIndex are invalid or fail their checksum (modulus/exponent likely mistyped)"))
             return done(steps, rid, caIndex, "Configured CA public key is invalid.")
         }
-        val caDetail = "RID $rid index $caIndex, modulus ${caMod.size * 8} bits"
-        when (CaPublicKeyStore.verifyChecksum(caKey)) {
-            CaPublicKeyStore.ChecksumResult.MISMATCH -> {
-                steps.add(CdaStep("CA public key", CdaStepStatus.FAIL,
-                    "Checksum mismatch for RID $rid index $caIndex — modulus/exponent likely mistyped. " +
-                        "Expected SHA-1 ${CaPublicKeyStore.expectedChecksum(caKey)}"))
-                return done(steps, rid, caIndex, "CA public key checksum mismatch — verify ca_public_keys.json.")
-            }
-            CaPublicKeyStore.ChecksumResult.MATCH ->
-                steps.add(CdaStep("CA public key", CdaStepStatus.PASS, "$caDetail, checksum OK"))
-            CaPublicKeyStore.ChecksumResult.ABSENT ->
-                steps.add(CdaStep("CA public key", CdaStepStatus.PASS, "$caDetail (no checksum supplied to validate)"))
-        }
 
-        // ── Step 2: recover Issuer public key ──
+        // ── Step 2: recover Issuer public key (try each candidate CA key) ──
         if (tags.issuerCertHex.isNullOrBlank() || tags.issuerExpHex.isNullOrBlank()) {
+            steps.add(CdaStep("CA public key", CdaStepStatus.PASS,
+                "RID $rid index $caIndex (${usable.size} candidate key(s))"))
             steps.add(CdaStep("Issuer public key", CdaStepStatus.SKIPPED,
                 "Issuer PK certificate (90) or exponent (9F32) not found in records"))
             return done(steps, rid, caIndex, "Cannot verify: issuer certificate data missing.")
         }
+        val issuerCert = hexToBytes(tags.issuerCertHex)
         val issuerRem = tags.issuerRemHex?.let { hexToBytes(it) } ?: ByteArray(0)
         val issuerExp = hexToBytes(tags.issuerExpHex)
-        val issuer = try {
-            recoverCertKey(
-                cert = hexToBytes(tags.issuerCertHex),
-                caOrIssuerMod = caMod, caOrIssuerExp = caExp,
-                expectedFormat = 0x02,
-                headerFixedLen = 15,        // 6A,fmt,id(4),date(2),serial(3),hashAlg,pkAlg,pkLen,expLen
-                pkLenIndex = 13,
-                remainder = issuerRem, keyExponent = issuerExp,
-                staticData = null
-            )
-        } catch (e: Exception) {
-            steps.add(CdaStep("Issuer public key", CdaStepStatus.FAIL, "Recovery error: ${e.message}"))
-            return done(steps, rid, caIndex, "Issuer public key recovery failed.")
+
+        var chosenKey: CaPublicKey? = null
+        var chosenIssuer: RecoveredKey? = null
+        for (key in usable) {
+            val r = try {
+                recoverCertKey(
+                    cert = issuerCert,
+                    caOrIssuerMod = hexToBytes(key.modulusHex), caOrIssuerExp = hexToBytes(key.exponentHex),
+                    expectedFormat = 0x02,
+                    headerFixedLen = 15,    // 6A,fmt,id(4),date(2),serial(3),hashAlg,pkAlg,pkLen,expLen
+                    pkLenIndex = 13,
+                    remainder = issuerRem, keyExponent = issuerExp,
+                    staticData = null
+                )
+            } catch (_: Exception) { null } ?: continue
+            if (r.formatOk && r.hashOk) { chosenKey = key; chosenIssuer = r; break }
         }
-        if (!issuer.formatOk) {
+        val caKey = chosenKey
+        val issuer = chosenIssuer
+        if (caKey == null || issuer == null) {
+            steps.add(CdaStep("CA public key", CdaStepStatus.PASS,
+                "RID $rid index $caIndex (${usable.size} candidate key(s))"))
             steps.add(CdaStep("Issuer public key", CdaStepStatus.FAIL,
-                "Recovered structure invalid (header/format/trailer). Wrong CA key?"))
-            return done(steps, rid, caIndex, "Issuer public key recovery failed (bad CA key or certificate).")
+                "None of the ${usable.size} candidate CA key(s) for RID $rid index $caIndex authenticated the issuer certificate (wrong key/index or bad certificate)"))
+            return done(steps, rid, caIndex, "Issuer public key recovery failed under all configured CA keys.")
         }
-        if (!issuer.hashOk) {
-            steps.add(CdaStep("Issuer public key", CdaStepStatus.FAIL,
-                "Certificate hash mismatch — issuer certificate not authentic under this CA key"))
-            return done(steps, rid, caIndex, "Issuer certificate hash verification failed.")
-        }
+        val chkNote = if (CaPublicKeyStore.verifyChecksum(caKey) == CaPublicKeyStore.ChecksumResult.MATCH) ", checksum OK" else ""
+        val candNote = if (usable.size > 1) " (chose 1 of ${usable.size} candidates)" else ""
+        steps.add(CdaStep("CA public key", CdaStepStatus.PASS,
+            "RID $rid index $caIndex, modulus ${hexToBytes(caKey.modulusHex).size * 8} bits$chkNote$candNote"))
         steps.add(CdaStep("Issuer public key", CdaStepStatus.PASS,
             "Recovered & hash-verified, modulus ${issuer.modulus.size * 8} bits"))
 
