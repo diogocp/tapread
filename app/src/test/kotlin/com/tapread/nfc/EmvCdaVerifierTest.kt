@@ -174,6 +174,26 @@ class EmvCdaVerifierTest {
         assertFalse(result.overallVerified)
     }
 
+    @Test fun rejectsCaKeyWithWrongChecksum() {
+        val chain = buildGenuineChain()
+        // Genuine modulus, but a checksum that doesn't match → flagged as a config typo.
+        val badChecksumKey = chain.caKey.copy(checksumHex = "00".repeat(20))
+        val result = EmvCdaVerifier.verify(chain.tags, listOf(badChecksumKey))
+        assertFalse(result.overallVerified)
+        assertTrue(result.steps.any {
+            it.name == "CA public key" && it.status.name == "FAIL" && it.detail!!.contains("Checksum")
+        })
+    }
+
+    @Test fun verifiesGenuineChainWithMatchingChecksum() {
+        val chain = buildGenuineChain()
+        val withChecksum = chain.caKey.copy(
+            checksumHex = com.tapread.nfc.util.CaPublicKeyStore.expectedChecksum(chain.caKey)
+        )
+        val result = EmvCdaVerifier.verify(chain.tags, listOf(withChecksum))
+        assertTrue(result.summary, result.overallVerified)
+    }
+
     // helpers
 
     private fun hexToBytes(hex: String): ByteArray {

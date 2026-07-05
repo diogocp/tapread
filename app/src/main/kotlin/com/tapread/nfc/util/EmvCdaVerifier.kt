@@ -75,8 +75,19 @@ object EmvCdaVerifier {
                 "Configured CA public key for RID $rid index $caIndex has invalid modulus/exponent hex"))
             return done(steps, rid, caIndex, "Configured CA public key is invalid.")
         }
-        steps.add(CdaStep("CA public key", CdaStepStatus.PASS,
-            "RID $rid index $caIndex, modulus ${caMod.size * 8} bits"))
+        val caDetail = "RID $rid index $caIndex, modulus ${caMod.size * 8} bits"
+        when (CaPublicKeyStore.verifyChecksum(caKey)) {
+            CaPublicKeyStore.ChecksumResult.MISMATCH -> {
+                steps.add(CdaStep("CA public key", CdaStepStatus.FAIL,
+                    "Checksum mismatch for RID $rid index $caIndex — modulus/exponent likely mistyped. " +
+                        "Expected SHA-1 ${CaPublicKeyStore.expectedChecksum(caKey)}"))
+                return done(steps, rid, caIndex, "CA public key checksum mismatch — verify ca_public_keys.json.")
+            }
+            CaPublicKeyStore.ChecksumResult.MATCH ->
+                steps.add(CdaStep("CA public key", CdaStepStatus.PASS, "$caDetail, checksum OK"))
+            CaPublicKeyStore.ChecksumResult.ABSENT ->
+                steps.add(CdaStep("CA public key", CdaStepStatus.PASS, "$caDetail (no checksum supplied to validate)"))
+        }
 
         // ── Step 2: recover Issuer public key ──
         if (tags.issuerCertHex.isNullOrBlank() || tags.issuerExpHex.isNullOrBlank()) {

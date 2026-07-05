@@ -1,10 +1,11 @@
 {
-  "_comment": "Scheme Certification Authority (CA) public keys used for offline CDA verification. These are published by the payment schemes (Visa, Mastercard, etc.) and are NOT bundled with the app. Add the key TapRead reports it needs (it prints the required RID + index). 'rid' = first 5 bytes of the AID (10 hex chars); 'index' = CA Public Key Index (EMV tag 8F, 2 hex chars); 'modulus' and 'exponent' are hex (no spaces). Example entry shape below under 'keys' (currently empty).",
+  "_comment": "Scheme Certification Authority (CA) public keys used for offline CDA verification. These are published by the payment schemes (Visa, Mastercard, etc.) and are NOT bundled with the app. Add the key TapRead reports it needs (it prints the required RID + index). 'rid' = first 5 bytes of the AID (10 hex chars); 'index' = CA Public Key Index (EMV tag 8F, 2 hex chars); 'modulus' and 'exponent' are hex (no spaces). 'checksum' is OPTIONAL but recommended: the SHA-1 check value published with the key = SHA-1(RID || index || modulus || exponent); when present, TapRead flags a mistyped modulus instead of silently failing.",
   "_example": {
     "rid": "A000000003",
     "index": "92",
-    "modulus": "996AF56F569187D09293C14810450ED8EE3357397B18A2458EFAA92DA3B6DF6514EC060195318FD43BE9B8F0CC669E3F844057CBDDF8BDA191BB64473BC8DC9A730DB8F6B4EDE3924186FFD9B8C7735789C23A36BF0B98D5A9C0C0F5EF1FB5B79D69F53E13BA96E4FF868A4A9B9A2F94B96A9A69A1F0F0F0F0F0F0F0F0F0F0F0",
-    "exponent": "03"
+    "modulus": "<full modulus hex from the scheme's published CA key table>",
+    "exponent": "03",
+    "checksum": "<20-byte SHA-1 check value published with the key>"
   },
   "keys": []
 }
