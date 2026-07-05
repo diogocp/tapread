@@ -59,6 +59,17 @@ class SettingsFragment : Fragment() {
             viewModel.setMaskPan(checked)
         })
 
+        // ── Diagnostics (advanced) ──
+        root.addView(sectionLabel("Diagnostics (advanced)"))
+
+        root.addView(switchRow(
+            "Active EMV probing",
+            "Sends live GENERATE AC / INTERNAL AUTHENTICATE to the card. May increment the card's ATC / issuer counters. Leave OFF unless testing.",
+            viewModel.activeProbing
+        ) { checked ->
+            viewModel.setActiveProbing(checked)
+        })
+
         // ── Data ──
         root.addView(sectionLabel("Data"))
 

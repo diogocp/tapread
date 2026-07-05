@@ -5,6 +5,7 @@ import com.github.devnied.emvnfccard.model.Application
 import com.github.devnied.emvnfccard.model.EmvCard
 import com.github.devnied.emvnfccard.parser.EmvTemplate
 import com.tapread.nfc.model.*
+import com.tapread.nfc.util.EmvDiagnosticsAnalyzer
 import com.tapread.nfc.util.HexUtil
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
@@ -31,7 +32,7 @@ class EmvReader {
         val debugMessage: String? = null
     )
 
-    fun read(isoDep: IsoDep): ScanResult {
+    fun read(isoDep: IsoDep, activeProbing: Boolean = false): ScanResult {
         val logger = ApduLogger()
         val provider = IsoDepProvider(logger)
 
@@ -54,7 +55,7 @@ class EmvReader {
 
         return try {
             val emvCard: EmvCard = template.readEmvCard()
-            val cardData = extractCardData(emvCard, provider, logger)
+            val cardData = extractCardData(emvCard, provider, logger, activeProbing)
             ScanResult(card = cardData, apduLog = logger.entries)
         } catch (e: Exception) {
             log.error("EMV read failed", e)
@@ -78,7 +79,7 @@ class EmvReader {
         }
     }
 
-    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger): CardData {
+    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger, activeProbing: Boolean): CardData {
         val pan = emvCard.cardNumber
         val expiry = emvCard.expireDate
         val holder = buildHolderName(emvCard)
@@ -120,31 +121,59 @@ class EmvReader {
         val supportsDda = aipHex?.let {
             it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x40 != 0)
         }
+
+        // ── Structured EMV diagnostics + full AFL traversal ──
+        // Read-only supplemental READ RECORDs (for any AFL record the library skipped) run
+        // inside analyze(), which returns BEFORE any cryptogram command is issued below.
+        val selectedAidForDiag = lastSelectedAidHex(logger) ?: primaryAidHex
+        val diagnostics = EmvDiagnosticsAnalyzer.analyze(
+            logEntries = logger.entries,
+            selectedAid = selectedAidForDiag,
+            activeProbing = activeProbing,
+            supplementalReader = { ref -> performReadRecord(provider, ref) }
+        )
+
+        // Re-derive CDOL1 from the full pool: supplemental reads are now in the log.
         val cdol1Hex = extractTagValueFromLog(logger, "8C")
-        val generateAcAttempt = try {
-            performGenerateAc(provider, cdol1Hex)
-        } catch (e: Exception) {
-            log.warn("GENERATE AC failed: {}", e.message)
-            GenerateAcAttempt(
-                cdol1Present = !cdol1Hex.isNullOrBlank(),
-                debugMessage = e.message ?: "Unexpected error during GENERATE AC"
-            )
-        }
-        val ddolHex = extractTagValueFromLog(logger, "9F49")
-        val internalAuthAttempt = if (supportsDda == true) {
-            try {
-                performInternalAuthenticate(provider, ddolHex)
+
+        // ── Active crypto probes (opt-in; may increment ATC / issuer counters) ──
+        val generateAcAttempt: GenerateAcAttempt
+        val internalAuthAttempt: InternalAuthAttempt
+        if (activeProbing) {
+            generateAcAttempt = try {
+                performGenerateAc(provider, cdol1Hex)
             } catch (e: Exception) {
-                log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
+                log.warn("GENERATE AC failed: {}", e.message)
+                GenerateAcAttempt(
+                    cdol1Present = !cdol1Hex.isNullOrBlank(),
+                    debugMessage = e.message ?: "Unexpected error during GENERATE AC"
+                )
+            }
+            val ddolHex = extractTagValueFromLog(logger, "9F49")
+            internalAuthAttempt = if (supportsDda == true) {
+                try {
+                    performInternalAuthenticate(provider, ddolHex)
+                } catch (e: Exception) {
+                    log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
+                    InternalAuthAttempt(
+                        attempted = true,
+                        debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
+                    )
+                }
+            } else {
                 InternalAuthAttempt(
-                    attempted = true,
-                    debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
+                    attempted = false,
+                    debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else "AIP not found, cannot determine DDA support"
                 )
             }
         } else {
-            InternalAuthAttempt(
+            generateAcAttempt = GenerateAcAttempt(
+                cdol1Present = !cdol1Hex.isNullOrBlank(),
+                debugMessage = "Active EMV probing disabled — GENERATE AC not sent"
+            )
+            internalAuthAttempt = InternalAuthAttempt(
                 attempted = false,
-                debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else "AIP not found, cannot determine DDA support"
+                debugMessage = "Active EMV probing disabled — INTERNAL AUTHENTICATE not sent"
             )
         }
         val generateAcResult = generateAcAttempt.result
@@ -185,8 +214,54 @@ class EmvReader {
             internalAuthStatusWord = internalAuthAttempt.statusWordHex,
             internalAuthDebug = internalAuthAttempt.debugMessage,
             walletType = walletInfo.first,
-            isTokenized = walletInfo.second
+            isTokenized = walletInfo.second,
+            emvDiagnostics = diagnostics
         )
+    }
+
+    /** AID (tag 4F / DF Name 84) of the last AID-bearing SELECT — the active app for follow-ups. */
+    private fun lastSelectedAidHex(logger: ApduLogger): String? {
+        return logger.entries.filter { it.label == "SELECT" }.asReversed()
+            .firstNotNullOfOrNull { e ->
+                val hex = HexUtil.toHex(e.response)
+                findTagValue(hex, "4F") ?: findTagValue(hex, "84")
+            }
+    }
+
+    /**
+     * Read-only supplemental READ RECORD for an AFL record the library skipped.
+     * Uses SFI-referenced form `00 B2 P1 P2 00`; retries once on `6C xx` (wrong Le).
+     */
+    private fun performReadRecord(provider: IsoDepProvider, ref: RecordRef): SupplementalRead {
+        return try {
+            val cmd = byteArrayOf(
+                0x00.toByte(), 0xB2.toByte(),
+                ref.p1().toByte(), ref.p2().toByte(), 0x00.toByte()
+            )
+            var response = provider.transceive(cmd)
+            if (response.size == 2 && (response[0].toInt() and 0xFF) == 0x6C) {
+                val retry = byteArrayOf(
+                    0x00.toByte(), 0xB2.toByte(),
+                    ref.p1().toByte(), ref.p2().toByte(), response[1]
+                )
+                response = provider.transceive(retry)
+            }
+            val sw = if (response.size >= 2)
+                "%04X".format(
+                    ((response[response.size - 2].toInt() and 0xFF) shl 8) or
+                        (response[response.size - 1].toInt() and 0xFF)
+                )
+            else null
+            SupplementalRead(
+                ref = ref,
+                statusWordHex = sw,
+                success = sw == "9000",
+                responseHex = HexUtil.toHex(response)
+            )
+        } catch (e: Exception) {
+            log.warn("Supplemental READ RECORD (SFI {} rec {}) failed: {}", ref.sfi, ref.record, e.message)
+            SupplementalRead(ref = ref, statusWordHex = null, success = false, responseHex = null)
+        }
     }
 
     /** Detect contactless status from APDU log responses */

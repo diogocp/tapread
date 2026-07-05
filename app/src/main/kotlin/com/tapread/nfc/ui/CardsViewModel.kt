@@ -19,6 +19,8 @@ class CardsViewModel(application: Application) : AndroidViewModel(application) {
 
     val maskPan: Boolean get() = storage.maskPan
 
+    val activeProbing: Boolean get() = storage.activeProbing
+
     init {
         // Load persisted scans on startup
         _scans.value = storage.loadScans()
@@ -43,6 +45,10 @@ class CardsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setMaskPan(mask: Boolean) {
         storage.maskPan = mask
+    }
+
+    fun setActiveProbing(enabled: Boolean) {
+        storage.activeProbing = enabled
     }
 
     fun exportJson(): String {

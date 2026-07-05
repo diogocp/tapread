@@ -17,6 +17,8 @@ import com.tapread.nfc.R
 import com.tapread.nfc.databinding.FragmentCardDetailBinding
 import com.tapread.nfc.model.CardData
 import com.tapread.nfc.model.ContactlessStatus
+import com.tapread.nfc.model.EmvDiagnostics
+import com.tapread.nfc.model.GpoFormat
 import com.tapread.nfc.ui.CardsViewModel
 import com.tapread.nfc.util.HapticUtil
 
@@ -202,6 +204,9 @@ class CardDetailFragment : Fragment() {
             }
         }
 
+        // EMV Diagnostics (AIP/PDOL/AFL decode, full-AFL-read verification, verdict)
+        card.emvDiagnostics?.let { appendDiagnostics(sb, it) }
+
         // CVM List — extract tag 8E from APDU log
         val cvmHex = extractTagFromApdu(apduLog, "8E")
         if (cvmHex != null) {
@@ -258,6 +263,76 @@ class CardDetailFragment : Fragment() {
     }
 
     private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
+    /** Render the structured EMV diagnostics block into the monospace details text. */
+    private fun appendDiagnostics(sb: StringBuilder, diag: EmvDiagnostics) {
+        sb.appendLine("─── EMV Diagnostics ──────────────")
+        sb.appendLine("Selected AID   :  ${diag.selectedAid ?: "N/A"}${diag.scheme?.let { "  ($it)" } ?: ""}")
+        sb.appendLine("GPO format     :  ${gpoFormatLabel(diag.gpoFormat)}")
+        sb.appendLine()
+
+        if (!diag.aipHex.isNullOrBlank()) {
+            sb.appendLine("AIP            :  ${diag.aipHex.uppercase()}")
+            for (f in diag.aipFlags) {
+                sb.appendLine("  ${f.label.padEnd(38)}: ${yesNo(f.set)}")
+            }
+            sb.appendLine()
+        }
+
+        sb.appendLine("PDOL (9F38)    :  ${if (diag.pdolPresent) "Present" else "Not present"}")
+        for (item in diag.pdolItems) {
+            sb.appendLine("  ${item.tag.padEnd(6)} ${item.length.toString().padStart(2)}  ${item.name}")
+        }
+        sb.appendLine()
+
+        sb.appendLine("AFL (94)       :  ${if (diag.aflPresent) "Present" else "Not present"}")
+        for (e in diag.aflEntries) {
+            sb.appendLine("  SFI ${e.sfi}  rec ${e.firstRecord}..${e.lastRecord}  SDA-recs ${e.sdaRecordCount}  [${e.rawHex}]")
+        }
+        if (diag.aflPresent) {
+            sb.appendLine("  Expected records : ${diag.expectedRecords.size}   Read by library : ${diag.recordsReadByLibrary.size}")
+            sb.appendLine("  All AFL records read : ${yesNo(diag.allAflRecordsRead)}")
+            for (s in diag.supplementalReads) {
+                val outcome = if (s.success) "read OK" else "failed"
+                sb.appendLine("    supplemental SFI ${s.ref.sfi} rec ${s.ref.record} → ${s.statusWordHex ?: "—"} ($outcome)")
+            }
+        }
+        sb.appendLine()
+
+        sb.appendLine("Tag presence (full record pool):")
+        val p = diag.presence
+        sb.appendLine("  8C   CDOL1 : ${yesNo(p.cdol1)}      8D   CDOL2 : ${yesNo(p.cdol2)}")
+        sb.appendLine("  9F4B SDAD  : ${yesNo(p.sdad)}      9F49 DDOL  : ${yesNo(p.ddol)}")
+        sb.appendLine("  9F46/47/48 ICC PK : ${yesNo(p.iccPkCert)}/${yesNo(p.iccPkExp)}/${yesNo(p.iccPkRem)}")
+        sb.appendLine("  9F26 AC    : ${yesNo(p.ac)}      9F36 ATC   : ${yesNo(p.atc)}      5F34 PSN : ${yesNo(p.psn)}")
+        sb.appendLine()
+
+        if (diag.isVisaPath) {
+            sb.appendLine("Visa/qVSDC GPO dynamic data:")
+            for (t in diag.gpoDynamicTags) {
+                sb.appendLine("  ${t.tag.padEnd(6)} ${t.name.padEnd(34)}: ${yesNo(t.present)}")
+            }
+            sb.appendLine()
+        }
+
+        val v = diag.generateAcAvailability
+        sb.appendLine("Generic GENERATE AC: ${if (v.available) "Available" else "Not available"}")
+        v.reason?.let { sb.appendLine("  Reason : $it") }
+        v.nextStep?.let { sb.appendLine("  Next   : $it") }
+
+        if (diag.notes.isNotEmpty()) {
+            sb.appendLine()
+            sb.appendLine("Notes:")
+            for (n in diag.notes) sb.appendLine("  • $n")
+        }
+        sb.appendLine()
+    }
+
+    private fun gpoFormatLabel(f: GpoFormat): String = when (f) {
+        GpoFormat.FORMAT_1 -> "Format 1 (tag 80)"
+        GpoFormat.FORMAT_2 -> "Format 2 (tag 77)"
+        GpoFormat.UNKNOWN -> "Unknown"
+    }
 
     private fun formatStatusWord(swHex: String?): String {
         val clean = swHex?.replace(" ", "")?.uppercase().orEmpty()

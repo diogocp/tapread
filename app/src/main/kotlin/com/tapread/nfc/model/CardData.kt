@@ -42,7 +42,9 @@ data class CardData(
     val cplcData: String? = null,
     // Wallet/tokenization
     val walletType: String? = null,       // "Apple Pay", "Google Pay", "Samsung Pay", etc.
-    val isTokenized: Boolean = false      // True if DPAN detected
+    val isTokenized: Boolean = false,     // True if DPAN detected
+    // Structured EMV diagnostics (AIP/PDOL/AFL decode, full-AFL-read verification, verdict)
+    val emvDiagnostics: EmvDiagnostics? = null
 ) {
     val last4: String get() = pan?.takeLast(4) ?: "????"
 
@@ -109,3 +111,101 @@ enum class ContactlessStatus {
     BLOCKED,         // PPSE returned 6985 (conditions not satisfied)
     NOT_PAYMENT_CARD // Tag responds but no PPSE
 }
+
+// ── Structured EMV diagnostics ──
+
+/**
+ * Structured EMV diagnostics for the selected application. Produced by
+ * [com.tapread.nfc.util.EmvDiagnosticsAnalyzer.analyze] from the captured APDU log
+ * (plus any supplemental READ RECORDs). Its purpose is to distinguish
+ * "the card does not support this" from "the app never read the record that proves it".
+ */
+data class EmvDiagnostics(
+    val selectedAid: String?,
+    val scheme: String?,
+    val gpoFormat: GpoFormat,
+    // AIP (both bytes, all documented bits)
+    val aipHex: String?,
+    val aipFlags: List<AipFlag> = emptyList(),
+    // PDOL (9F38) from the SELECT-AID FCI
+    val pdolPresent: Boolean = false,
+    val pdolItems: List<DolItem> = emptyList(),
+    // AFL (94) decoded
+    val aflPresent: Boolean = false,
+    val aflEntries: List<AflEntry> = emptyList(),
+    // AFL traversal verification
+    val expectedRecords: List<RecordRef> = emptyList(),
+    val recordsReadByLibrary: List<RecordRef> = emptyList(),
+    val missingRecords: List<RecordRef> = emptyList(),
+    val supplementalReads: List<SupplementalRead> = emptyList(),
+    val allAflRecordsRead: Boolean = true,
+    // Presence flags across the full response pool
+    val presence: TagPresence,
+    // Visa / qVSDC: which dynamic tags appear in the GPO response itself
+    val isVisaPath: Boolean = false,
+    val gpoDynamicTags: List<GpoDynamicTag> = emptyList(),
+    // GENERATE AC availability verdict
+    val generateAcAvailability: GenerateAcAvailability,
+    // Human-readable notes accumulated during analysis
+    val notes: List<String> = emptyList()
+)
+
+enum class GpoFormat { FORMAT_1, FORMAT_2, UNKNOWN }
+
+data class AipFlag(
+    val label: String,
+    val byteIndex: Int,   // 1 or 2
+    val mask: Int,        // e.g. 0x80
+    val set: Boolean
+)
+
+data class DolItem(
+    val tag: String,      // e.g. "9F02"
+    val length: Int,      // bytes
+    val name: String      // human name, or "Unknown"
+)
+
+data class AflEntry(
+    val sfi: Int,             // b0 shr 3
+    val firstRecord: Int,     // b1
+    val lastRecord: Int,      // b2
+    val sdaRecordCount: Int,  // b3
+    val rawHex: String        // the 4-byte entry, e.g. "08010100"
+)
+
+data class RecordRef(val sfi: Int, val record: Int) {
+    fun p1(): Int = record
+    fun p2(): Int = (sfi shl 3) or 0x04
+}
+
+data class SupplementalRead(
+    val ref: RecordRef,
+    val statusWordHex: String?,   // e.g. "9000", "6A83"
+    val success: Boolean,
+    val responseHex: String?      // full response incl. SW, or null on error
+)
+
+data class TagPresence(
+    val cdol1: Boolean,   // 8C
+    val cdol2: Boolean,   // 8D
+    val sdad: Boolean,    // 9F4B
+    val iccPkCert: Boolean,   // 9F46
+    val iccPkExp: Boolean,    // 9F47
+    val iccPkRem: Boolean,    // 9F48
+    val ddol: Boolean,    // 9F49
+    val ac: Boolean,      // 9F26
+    val atc: Boolean,     // 9F36
+    val psn: Boolean      // 5F34
+)
+
+data class GpoDynamicTag(
+    val tag: String,      // 9F26,9F27,9F36,9F4B,9F10,9F6C,9F6E
+    val name: String,
+    val present: Boolean
+)
+
+data class GenerateAcAvailability(
+    val available: Boolean,
+    val reason: String?,   // why (not) available
+    val nextStep: String?  // guidance text
+)

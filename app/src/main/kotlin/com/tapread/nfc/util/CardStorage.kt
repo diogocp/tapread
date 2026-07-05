@@ -50,6 +50,11 @@ class CardStorage(context: Context) {
         get() = settingsPrefs.getBoolean("mask_pan", true)
         set(value) { settingsPrefs.edit().putBoolean("mask_pan", value).apply() }
 
+    /** When ON, TapRead sends live cryptogram commands (GENERATE AC / INTERNAL AUTHENTICATE). Default OFF. */
+    var activeProbing: Boolean
+        get() = settingsPrefs.getBoolean("active_probing", false)
+        set(value) { settingsPrefs.edit().putBoolean("active_probing", value).apply() }
+
     var darkMode: Boolean?
         get() = if (settingsPrefs.contains("dark_mode")) settingsPrefs.getBoolean("dark_mode", false) else null
         set(value) {

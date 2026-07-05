@@ -209,6 +209,9 @@ object TlvParser {
 
     private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
 
+    /** Human-readable name for an EMV tag (single-sources [EMV_TAGS]). */
+    fun tagName(tag: String): String = EMV_TAGS[tag.uppercase()] ?: "Unknown"
+
     // EMV tag dictionary
     private val EMV_TAGS = mapOf(
         "6F" to "FCI Template",
@@ -248,6 +251,7 @@ object TlvParser {
         "9F0E" to "Issuer Action Code - Denial",
         "9F0F" to "Issuer Action Code - Online",
         "9F10" to "Issuer Application Data",
+        "95" to "Terminal Verification Results",
         "9F1A" to "Terminal Country Code",
         "9F1F" to "Track 1 Discretionary Data",
         "9F21" to "Transaction Time",
@@ -265,6 +269,7 @@ object TlvParser {
         "9F47" to "ICC Public Key Exponent",
         "9F48" to "ICC Public Key Remainder",
         "9F49" to "DDOL",
+        "9F66" to "Terminal Transaction Qualifiers",
         "9F4A" to "Static Data Authentication Tag List",
         "9F4D" to "Log Entry",
         "9F4F" to "Log Format",

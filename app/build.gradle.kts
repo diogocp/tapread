@@ -59,6 +59,9 @@ android {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
         }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 
     // Custom APK naming: tapread-v1.0.0-release.apk
@@ -93,4 +96,7 @@ dependencies {
 
     // JSON serialization for card data persistence
     implementation("com.google.code.gson:gson:2.11.0")
+
+    // Unit tests (pure JVM — EMV diagnostics analyzer)
+    testImplementation("junit:junit:4.13.2")
 }
