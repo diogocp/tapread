@@ -488,73 +488,73 @@ class EmvReader {
     }
 
     private fun performInternalAuthenticate(provider: IsoDepProvider, ddolHex: String?, aipAdvertisesDda: Boolean): InternalAuthAttempt {
-        // Build the challenge data from DDOL, or fall back to a 4-byte unpredictable number
-        val fallbackNonce = randomHex(4)
-        val dataHex = if (!ddolHex.isNullOrBlank()) {
+        // Build the challenge variants to try. INTERNAL AUTHENTICATE never touches the ATC, so it
+        // is safe to attempt more than once: the card's DDOL (9F49) if present, then the default
+        // DDOL (4-byte UN), then an 8-byte UN. Deduped by length. We stop at the first 9000, and
+        // stop escalating on an instruction-level rejection (a different challenge can't help then).
+        val challenges = mutableListOf<Pair<String, String>>()   // (label, challengeHex)
+        val seenLengths = mutableSetOf<Int>()
+        fun addChallenge(label: String, hex: String) {
+            if (hex.isNotEmpty() && seenLengths.add(hex.length / 2)) challenges.add(label to hex)
+        }
+        if (!ddolHex.isNullOrBlank()) {
             val ddol = parseCdol(ddolHex)
-            if (ddol.isEmpty()) fallbackNonce
-            else buildString {
-                for ((tag, length) in ddol) {
-                    append(if (tag == "9F37") randomHex(length) else "00".repeat(length))
-                }
+            if (ddol.isNotEmpty()) addChallenge("DDOL", buildString {
+                for ((tag, length) in ddol) append(if (tag == "9F37") randomHex(length) else "00".repeat(length))
+            })
+        }
+        addChallenge("4-byte UN", randomHex(4))
+        addChallenge("8-byte UN", randomHex(8))
+
+        val tried = mutableListOf<String>()
+        var lastSwHex: String? = null
+        for ((label, dataHex) in challenges) {
+            val dataBytes = hexToBytes(dataHex)
+            val command = byteArrayOf(
+                0x00.toByte(), 0x88.toByte(), 0x00.toByte(), 0x00.toByte(),
+                dataBytes.size.toByte()
+            ) + dataBytes + byteArrayOf(0x00)
+            val response = provider.transceive(command)
+            if (response.size < 2) { tried.add("$label (no SW)"); continue }
+
+            val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
+                (response[response.size - 1].toInt() and 0xFF)
+            val swHex = "%04X".format(sw)
+            lastSwHex = swHex
+            tried.add("$label→$swHex")
+
+            if (sw == 0x9000) {
+                val sdadHex = extractTagValue(response, "9F4B")
+                val note = if (!aipAdvertisesDda)
+                    "Card signed a DDA challenge even though its AIP did not advertise DDA" else null
+                log.info("INTERNAL AUTHENTICATE succeeded ({}) SW=9000", label)
+                return InternalAuthAttempt(
+                    result = InternalAuthResult(
+                        challengeHex = dataHex,
+                        sdadHex = sdadHex,
+                        statusWordHex = swHex,
+                        rawResponseHex = HexUtil.toHex(response)
+                    ),
+                    attempted = true,
+                    statusWordHex = swHex,
+                    debugMessage = note
+                )
             }
-        } else {
-            fallbackNonce
+            // Instruction-level rejection: opcode 0x88 isn't implemented — no challenge will help.
+            if (sw == 0x6D00 || sw == 0x6A81 || sw == 0x6E00) break
         }
 
-        val dataBytes = hexToBytes(dataHex)
-        val command = byteArrayOf(
-            0x00.toByte(), 0x88.toByte(), 0x00.toByte(), 0x00.toByte(),
-            dataBytes.size.toByte()
-        ) + dataBytes + byteArrayOf(0x00)
-
-        val response = provider.transceive(command)
-        if (response.size < 2) {
-            return InternalAuthAttempt(
-                attempted = true,
-                debugMessage = "Card returned no INTERNAL AUTHENTICATE status word"
+        val insLevel = lastSwHex == "6D00" || lastSwHex == "6A81" || lastSwHex == "6E00"
+        val reason = buildString {
+            append("Rejected across ${tried.size} challenge variant(s): ${tried.joinToString(", ")}. ")
+            append(
+                if (insLevel) "Status word indicates the INTERNAL AUTHENTICATE instruction is not implemented — DDA genuinely unsupported."
+                else "Instruction appears present but the card refused every challenge (DDA not usable / state-restricted)."
             )
+            if (!aipAdvertisesDda) append(" AIP did not advertise DDA; this card uses CDA via GENERATE AC → 9F4B.")
         }
-
-        val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
-            (response[response.size - 1].toInt() and 0xFF)
-        val swHex = "%04X".format(sw)
-
-        if (sw != 0x9000) {
-            val base = when (sw) {
-                0x6985 -> "Conditions not satisfied"
-                0x6D00 -> "Instruction not supported"
-                0x6A81 -> "Function not supported"
-                0x6984 -> "Invalid data"
-                else -> "Card rejected INTERNAL AUTHENTICATE"
-            }
-            // Expected for a CDA-only card: standalone DDA isn't offered; dynamic auth is via CDA.
-            val reason = if (!aipAdvertisesDda)
-                "$base — DDA not advertised by AIP (expected: this card uses CDA via GENERATE AC → 9F4B)"
-            else base
-            log.info("INTERNAL AUTHENTICATE rejected with SW={}", swHex)
-            return InternalAuthAttempt(
-                attempted = true,
-                statusWordHex = swHex,
-                debugMessage = reason
-            )
-        }
-
-        val sdadHex = extractTagValue(response, "9F4B")
-        val note = if (!aipAdvertisesDda)
-            "Card signed a DDA challenge even though its AIP did not advertise DDA" else null
-
-        return InternalAuthAttempt(
-            result = InternalAuthResult(
-                challengeHex = dataHex,
-                sdadHex = sdadHex,
-                statusWordHex = swHex,
-                rawResponseHex = HexUtil.toHex(response)
-            ),
-            attempted = true,
-            statusWordHex = swHex,
-            debugMessage = note
-        )
+        log.info("INTERNAL AUTHENTICATE rejected: {}", tried.joinToString(", "))
+        return InternalAuthAttempt(attempted = true, statusWordHex = lastSwHex, debugMessage = reason)
     }
 
     private data class GenAcData(val dataHex: String, val unHex: String?)
