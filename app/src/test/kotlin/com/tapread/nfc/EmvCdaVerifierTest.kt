@@ -5,6 +5,7 @@ import com.tapread.nfc.util.EmvCdaVerifier
 import com.tapread.nfc.util.HexUtil
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.math.BigInteger
@@ -200,6 +201,24 @@ class EmvCdaVerifierTest {
         )
         val result = EmvCdaVerifier.verify(chain.tags, listOf(withChecksum))
         assertTrue(result.summary, result.overallVerified)
+    }
+
+    // ── Static cert-chain verification (no SDAD, no ATC) ──
+
+    @Test fun verifyCertChain_genuineChain_isStaticallyVerified() {
+        val chain = buildGenuineChain()
+        val result = EmvCdaVerifier.verifyCertChain(chain.tags, listOf(chain.caKey))
+        assertTrue(result.summary, result.overallVerified)
+        assertTrue(result.summary!!.contains("STATIC"))
+        // It must not require or use a signature.
+        assertNull(result.recoveredAcHex)
+    }
+
+    @Test fun verifyCertChain_wrongCaKey_fails() {
+        val chain = buildGenuineChain()
+        val bogus = CaPublicKey(chain.caKey.rid, chain.caKey.index, HexUtil.toHex(genKey(2048).modBytes), "010001")
+        val result = EmvCdaVerifier.verifyCertChain(chain.tags, listOf(bogus))
+        assertFalse(result.overallVerified)
     }
 
     // helpers

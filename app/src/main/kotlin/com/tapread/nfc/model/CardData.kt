@@ -47,7 +47,9 @@ data class CardData(
     val atc: String? = null,              // 9F36 Application Transaction Counter (current)
     val lastOnlineAtc: String? = null,    // 9F13 Last Online ATC Register
     // Structured EMV diagnostics (AIP/PDOL/AFL decode, full-AFL-read verification, verdict)
-    val emvDiagnostics: EmvDiagnostics? = null
+    val emvDiagnostics: EmvDiagnostics? = null,
+    // Static certificate-chain verification (CA→Issuer→ICC from read records; no ATC change)
+    val certChainVerification: CdaVerification? = null
 ) {
     val last4: String get() = pan?.takeLast(4) ?: "????"
 

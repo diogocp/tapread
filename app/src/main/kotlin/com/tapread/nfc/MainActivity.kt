@@ -258,7 +258,12 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         ScanResult(tng = tngData, error = tngData.error)
                     }
                     NfcDispatcher.getIsoDep(tag) != null -> {
-                        emvReader.read(NfcDispatcher.getIsoDep(tag)!!, activeProbing = viewModel.activeProbing, caKeys = caKeys)
+                        emvReader.read(
+                            NfcDispatcher.getIsoDep(tag)!!,
+                            probeDda = viewModel.probeDda,
+                            probeGenerateAc = viewModel.probeGenerateAc,
+                            caKeys = caKeys
+                        )
                     }
                     else -> {
                         val uid = tag.id?.let { com.tapread.nfc.util.HexUtil.toHex(it) } ?: "unknown"

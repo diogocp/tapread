@@ -50,10 +50,15 @@ class CardStorage(context: Context) {
         get() = settingsPrefs.getBoolean("mask_pan", true)
         set(value) { settingsPrefs.edit().putBoolean("mask_pan", value).apply() }
 
-    /** When ON, TapRead sends live cryptogram commands (GENERATE AC / INTERNAL AUTHENTICATE). Default OFF. */
-    var activeProbing: Boolean
-        get() = settingsPrefs.getBoolean("active_probing", false)
-        set(value) { settingsPrefs.edit().putBoolean("active_probing", value).apply() }
+    /** When ON, send INTERNAL AUTHENTICATE (DDA probe). Read-only — does NOT increment the ATC. Default OFF. */
+    var probeDda: Boolean
+        get() = settingsPrefs.getBoolean("probe_dda", false)
+        set(value) { settingsPrefs.edit().putBoolean("probe_dda", value).apply() }
+
+    /** When ON, send GENERATE AC (CDA probe). This INCREMENTS the card's ATC. Default OFF. */
+    var probeGenerateAc: Boolean
+        get() = settingsPrefs.getBoolean("probe_generate_ac", false)
+        set(value) { settingsPrefs.edit().putBoolean("probe_generate_ac", value).apply() }
 
     var darkMode: Boolean?
         get() = if (settingsPrefs.contains("dark_mode")) settingsPrefs.getBoolean("dark_mode", false) else null

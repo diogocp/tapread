@@ -176,7 +176,6 @@ class CardDetailFragment : Fragment() {
                 }
                 sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
                 sb.appendLine("Status word    :  ${formatStatusWord(card.generateAcStatusWord)}")
-                generateAc.cdaVerification?.let { appendCdaVerification(sb, it) }
             } else {
                 sb.appendLine("GENERATE AC    :  Not available")
                 if (!card.generateAcStatusWord.isNullOrBlank()) {
@@ -214,6 +213,15 @@ class CardDetailFragment : Fragment() {
                 }
                 sb.appendLine()
             }
+        }
+
+        // Offline authentication verification: full CDA (with liveness) when a GENERATE AC SDAD
+        // was obtained, otherwise the static cert-chain result (zero ATC cost).
+        val fullCda = card.generateAcResult?.cdaVerification
+        when {
+            fullCda != null -> appendCdaVerification(sb, fullCda, "CDA Verification")
+            card.certChainVerification != null ->
+                appendCdaVerification(sb, card.certChainVerification, "Certificate Chain (static, no ATC)")
         }
 
         // ATC counters (read-only GET DATA — no increment)
@@ -354,10 +362,10 @@ class CardDetailFragment : Fragment() {
         sb.appendLine()
     }
 
-    /** Render the offline CDA verification result. */
-    private fun appendCdaVerification(sb: StringBuilder, v: CdaVerification) {
+    /** Render a CDA / certificate-chain verification result under the given [title]. */
+    private fun appendCdaVerification(sb: StringBuilder, v: CdaVerification, title: String) {
         sb.appendLine()
-        sb.appendLine("─── CDA Verification ────────────")
+        sb.appendLine("─── $title ───")
         if (!v.attempted) {
             sb.appendLine(v.summary ?: "Not attempted")
             return

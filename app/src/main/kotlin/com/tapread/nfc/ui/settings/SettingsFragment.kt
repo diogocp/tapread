@@ -63,11 +63,19 @@ class SettingsFragment : Fragment() {
         root.addView(sectionLabel("Diagnostics (advanced)"))
 
         root.addView(switchRow(
-            "Active EMV probing",
-            "Sends live GENERATE AC / INTERNAL AUTHENTICATE to the card. May increment the card's ATC / issuer counters. Leave OFF unless testing.",
-            viewModel.activeProbing
+            "DDA probe (INTERNAL AUTHENTICATE)",
+            "Sends INTERNAL AUTHENTICATE to test standalone DDA. Read-only — does NOT increment the card's ATC. Safe to leave on.",
+            viewModel.probeDda
         ) { checked ->
-            viewModel.setActiveProbing(checked)
+            viewModel.setProbeDda(checked)
+        })
+
+        root.addView(switchRow(
+            "GENERATE AC probe (CDA)",
+            "Sends GENERATE AC to obtain a CDA signature (9F4B). This INCREMENTS the card's ATC each scan and can affect issuer risk counters. Enable only for a deliberate test.",
+            viewModel.probeGenerateAc
+        ) { checked ->
+            viewModel.setProbeGenerateAc(checked)
         })
 
         // ── Data ──

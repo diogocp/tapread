@@ -35,7 +35,12 @@ class EmvReader {
         val debugMessage: String? = null
     )
 
-    fun read(isoDep: IsoDep, activeProbing: Boolean = false, caKeys: List<CaPublicKey> = emptyList()): ScanResult {
+    fun read(
+        isoDep: IsoDep,
+        probeDda: Boolean = false,
+        probeGenerateAc: Boolean = false,
+        caKeys: List<CaPublicKey> = emptyList()
+    ): ScanResult {
         val logger = ApduLogger()
         val provider = IsoDepProvider(logger)
 
@@ -58,7 +63,7 @@ class EmvReader {
 
         return try {
             val emvCard: EmvCard = template.readEmvCard()
-            val cardData = extractCardData(emvCard, provider, logger, activeProbing, caKeys)
+            val cardData = extractCardData(emvCard, provider, logger, probeDda, probeGenerateAc, caKeys)
             ScanResult(card = cardData, apduLog = logger.entries)
         } catch (e: Exception) {
             log.error("EMV read failed", e)
@@ -82,7 +87,7 @@ class EmvReader {
         }
     }
 
-    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger, activeProbing: Boolean, caKeys: List<CaPublicKey>): CardData {
+    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger, probeDda: Boolean, probeGenerateAc: Boolean, caKeys: List<CaPublicKey>): CardData {
         val pan = emvCard.cardNumber
         val expiry = emvCard.expireDate
         val holder = buildHolderName(emvCard)
@@ -132,7 +137,7 @@ class EmvReader {
         val diagnostics = EmvDiagnosticsAnalyzer.analyze(
             logEntries = logger.entries,
             selectedAid = selectedAidForDiag,
-            activeProbing = activeProbing,
+            activeProbing = probeDda || probeGenerateAc,
             supplementalReader = { ref -> performReadRecord(provider, ref) }
         )
 
@@ -144,58 +149,63 @@ class EmvReader {
         val atc = performGetData(provider, "9F36")
         val lastOnlineAtc = performGetData(provider, "9F13")
 
-        // ── Active crypto probes (opt-in; may increment ATC / issuer counters) ──
-        val generateAcAttempt: GenerateAcAttempt
-        val internalAuthAttempt: InternalAuthAttempt
-        if (activeProbing) {
-            // INTERNAL AUTHENTICATE first: standalone DDA precedes GENERATE AC in the EMV flow
-            // (and does NOT increment the ATC). We attempt it even when the AIP doesn't advertise
-            // DDA, to confirm the card's actual behaviour — most CDA-only cards reject it (6985/
-            // 6D00), which is expected and not a problem: dynamic auth is delivered via CDA instead.
+        // Certificate tags for offline authentication (gathered read-only from the records).
+        val certTagsBase = EmvCdaVerifier.CertTags(
+            aid = selectedAidForDiag,
+            caIndexHex = extractTagValueFromLog(logger, "8F"),
+            issuerCertHex = extractTagValueFromLog(logger, "90"),
+            issuerRemHex = extractTagValueFromLog(logger, "92"),
+            issuerExpHex = extractTagValueFromLog(logger, "9F32"),
+            iccCertHex = extractTagValueFromLog(logger, "9F46"),
+            iccExpHex = extractTagValueFromLog(logger, "9F47"),
+            iccRemHex = extractTagValueFromLog(logger, "9F48"),
+            sdadHex = null, unHex = null
+        )
+        // Static cert-chain verification (CA→Issuer→ICC) — no card command, no ATC change; always runs.
+        val certChainVerification = if (!certTagsBase.issuerCertHex.isNullOrBlank()) {
+            try {
+                EmvCdaVerifier.verifyCertChain(certTagsBase, caKeys)
+            } catch (e: Exception) {
+                log.warn("Cert-chain verification error: {}", e.message)
+                null
+            }
+        } else null
+
+        // ── DDA probe (INTERNAL AUTHENTICATE) — does NOT increment the ATC ──
+        val internalAuthAttempt: InternalAuthAttempt = if (probeDda) {
+            // Sent before GENERATE AC (correct EMV order). Attempted even when the AIP doesn't
+            // advertise DDA, to confirm the card's actual behaviour — most CDA-only cards reject it
+            // (6985/6D00), which is expected: dynamic auth is delivered via CDA instead.
             val ddolHex = extractTagValueFromLog(logger, "9F49")
-            internalAuthAttempt = try {
+            try {
                 performInternalAuthenticate(provider, ddolHex, aipAdvertisesDda = supportsDda == true)
             } catch (e: Exception) {
                 log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
-                InternalAuthAttempt(
-                    attempted = true,
-                    debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
-                )
+                InternalAuthAttempt(attempted = true, debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE")
             }
-            generateAcAttempt = try {
+        } else {
+            InternalAuthAttempt(attempted = false, debugMessage = "DDA probe disabled — INTERNAL AUTHENTICATE not sent")
+        }
+
+        // ── GENERATE AC probe (CDA) — INCREMENTS the ATC ──
+        val generateAcAttempt: GenerateAcAttempt = if (probeGenerateAc) {
+            try {
                 performGenerateAc(provider, cdol1Hex, requestCda = supportsCda == true)
             } catch (e: Exception) {
                 log.warn("GENERATE AC failed: {}", e.message)
-                GenerateAcAttempt(
-                    cdol1Present = !cdol1Hex.isNullOrBlank(),
-                    debugMessage = e.message ?: "Unexpected error during GENERATE AC"
-                )
+                GenerateAcAttempt(cdol1Present = !cdol1Hex.isNullOrBlank(), debugMessage = e.message ?: "Unexpected error during GENERATE AC")
             }
         } else {
-            generateAcAttempt = GenerateAcAttempt(
+            GenerateAcAttempt(
                 cdol1Present = !cdol1Hex.isNullOrBlank(),
-                debugMessage = "Active EMV probing disabled — GENERATE AC not sent"
-            )
-            internalAuthAttempt = InternalAuthAttempt(
-                attempted = false,
-                debugMessage = "Active EMV probing disabled — INTERNAL AUTHENTICATE not sent"
+                debugMessage = "GENERATE AC probe disabled — not sent (it would increment the ATC)"
             )
         }
-        // ── Offline CDA verification (when a CDA SDAD was obtained) ──
+
+        // ── Full CDA verification (when a CDA SDAD was obtained via GENERATE AC) ──
         var generateAcResult = generateAcAttempt.result
         if (generateAcResult?.sdadHex != null) {
-            val tags = EmvCdaVerifier.CertTags(
-                aid = selectedAidForDiag,
-                caIndexHex = extractTagValueFromLog(logger, "8F"),
-                issuerCertHex = extractTagValueFromLog(logger, "90"),
-                issuerRemHex = extractTagValueFromLog(logger, "92"),
-                issuerExpHex = extractTagValueFromLog(logger, "9F32"),
-                iccCertHex = extractTagValueFromLog(logger, "9F46"),
-                iccExpHex = extractTagValueFromLog(logger, "9F47"),
-                iccRemHex = extractTagValueFromLog(logger, "9F48"),
-                sdadHex = generateAcResult.sdadHex,
-                unHex = generateAcResult.unHex
-            )
+            val tags = certTagsBase.copy(sdadHex = generateAcResult.sdadHex, unHex = generateAcResult.unHex)
             val verification = try {
                 EmvCdaVerifier.verify(tags, caKeys)
             } catch (e: Exception) {
@@ -244,7 +254,8 @@ class EmvReader {
             isTokenized = walletInfo.second,
             atc = atc,
             lastOnlineAtc = lastOnlineAtc,
-            emvDiagnostics = diagnostics
+            emvDiagnostics = diagnostics,
+            certChainVerification = certChainVerification
         )
     }
 
