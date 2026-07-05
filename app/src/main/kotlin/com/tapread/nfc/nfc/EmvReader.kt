@@ -17,6 +17,13 @@ class EmvReader {
     private val log = LoggerFactory.getLogger("EmvReader")
     private val secureRandom = SecureRandom()
 
+    private data class GenerateAcAttempt(
+        val result: GenerateAcResult? = null,
+        val cdol1Present: Boolean,
+        val statusWordHex: String? = null,
+        val debugMessage: String? = null
+    )
+
     fun read(isoDep: IsoDep): ScanResult {
         val logger = ApduLogger()
         val provider = IsoDepProvider(logger)
@@ -103,12 +110,17 @@ class EmvReader {
         val supportsCda = aipHex?.let {
             it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x02 != 0)
         }
-        val generateAcResult = try {
-            performGenerateAc(provider, extractTagValueFromLog(logger, "8C"))
+        val cdol1Hex = extractTagValueFromLog(logger, "8C")
+        val generateAcAttempt = try {
+            performGenerateAc(provider, cdol1Hex)
         } catch (e: Exception) {
             log.warn("GENERATE AC failed: {}", e.message)
-            null
+            GenerateAcAttempt(
+                cdol1Present = !cdol1Hex.isNullOrBlank(),
+                debugMessage = e.message ?: "Unexpected error during GENERATE AC"
+            )
         }
+        val generateAcResult = generateAcAttempt.result
         val cdaExecuted = generateAcResult?.cdaSignatureIncluded
 
         // Contactless status
@@ -137,6 +149,9 @@ class EmvReader {
             supportsCda = supportsCda,
             cdaExecuted = cdaExecuted,
             generateAcResult = generateAcResult,
+            generateAcStatusWord = generateAcAttempt.statusWordHex,
+            generateAcDebug = generateAcAttempt.debugMessage,
+            cdol1Present = generateAcAttempt.cdol1Present,
             walletType = walletInfo.first,
             isTokenized = walletInfo.second
         )
@@ -200,16 +215,22 @@ class EmvReader {
         return result
     }
 
-    private fun performGenerateAc(provider: IsoDepProvider, cdolHex: String?): GenerateAcResult? {
+    private fun performGenerateAc(provider: IsoDepProvider, cdolHex: String?): GenerateAcAttempt {
         if (cdolHex.isNullOrBlank()) {
             log.info("No CDOL1 found; skipping GENERATE AC")
-            return null
+            return GenerateAcAttempt(
+                cdol1Present = false,
+                debugMessage = "CDOL1 (tag 8C) not found"
+            )
         }
 
         val cdol = parseCdol(cdolHex)
         if (cdol.isEmpty()) {
             log.info("CDOL1 could not be parsed; skipping GENERATE AC")
-            return null
+            return GenerateAcAttempt(
+                cdol1Present = true,
+                debugMessage = "CDOL1 was found but could not be parsed"
+            )
         }
 
         val dataHex = buildGenerateAcData(cdol)
@@ -223,13 +244,23 @@ class EmvReader {
         ) + dataBytes + byteArrayOf(0x00)
 
         val response = provider.transceive(command)
-        if (response.size < 2) return null
+        if (response.size < 2) {
+            return GenerateAcAttempt(
+                cdol1Present = true,
+                debugMessage = "Card returned no GENERATE AC status word"
+            )
+        }
 
         val sw = ((response[response.size - 2].toInt() and 0xFF) shl 8) or
             (response[response.size - 1].toInt() and 0xFF)
+        val swHex = "%04X".format(sw)
         if (sw != 0x9000) {
-            log.info("GENERATE AC rejected with SW={}", "%04X".format(sw))
-            return null
+            log.info("GENERATE AC rejected with SW={}", swHex)
+            return GenerateAcAttempt(
+                cdol1Present = true,
+                statusWordHex = swHex,
+                debugMessage = "Card rejected GENERATE AC"
+            )
         }
 
         val cidHexFromTlv = extractTagValue(response, "9F27")
@@ -241,7 +272,11 @@ class EmvReader {
         val atcHex = atcHexFromTlv ?: template80?.takeIf { it.length >= 6 }?.substring(2, 6)
         val cryptogramHex = acHexFromTlv ?: template80?.takeIf { it.length >= 22 }?.substring(6, 22)
 
-        val cidValue = cidHex?.toIntOrNull(16) ?: return null
+        val cidValue = cidHex?.toIntOrNull(16) ?: return GenerateAcAttempt(
+            cdol1Present = true,
+            statusWordHex = swHex,
+            debugMessage = "GENERATE AC succeeded but CID could not be parsed"
+        )
         val cryptogramType = when (cidValue and 0xC0) {
             0x00 -> "AAC"
             0x40 -> "TC"
@@ -249,13 +284,17 @@ class EmvReader {
             else -> "RFU"
         }
 
-        return GenerateAcResult(
-            cryptogramType = cryptogramType,
-            cryptogramHex = cryptogramHex,
-            cidHex = cidHex,
-            cdaSignatureIncluded = cidValue and 0x20 != 0,
-            atcHex = atcHex,
-            rawResponseHex = HexUtil.toHex(response)
+        return GenerateAcAttempt(
+            result = GenerateAcResult(
+                cryptogramType = cryptogramType,
+                cryptogramHex = cryptogramHex,
+                cidHex = cidHex,
+                cdaSignatureIncluded = cidValue and 0x20 != 0,
+                atcHex = atcHex,
+                rawResponseHex = HexUtil.toHex(response)
+            ),
+            cdol1Present = true,
+            statusWordHex = swHex
         )
     }
 

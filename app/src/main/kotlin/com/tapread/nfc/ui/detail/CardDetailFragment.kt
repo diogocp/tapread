@@ -158,14 +158,23 @@ class CardDetailFragment : Fragment() {
 
             sb.appendLine("─── GENERATE AC Result ──────────")
             val generateAc = card.generateAcResult
+            sb.appendLine("CDOL1 found     :  ${yesNo(card.cdol1Present == true)}")
             if (generateAc != null) {
                 sb.appendLine("Cryptogram type:  ${generateAc.cryptogramType}")
                 sb.appendLine("Cryptogram (AC):  ${generateAc.cryptogramHex ?: "N/A"}")
                 sb.appendLine("CID            :  ${generateAc.cidHex ?: "N/A"}")
                 sb.appendLine("CDA executed   :  ${yesNo(card.cdaExecuted == true)}")
                 sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
+                sb.appendLine("Status word    :  ${formatStatusWord(card.generateAcStatusWord)}")
             } else {
-                sb.appendLine("GENERATE AC    :  Not available (card rejected or error)")
+                sb.appendLine("GENERATE AC    :  Not available")
+                if (!card.generateAcStatusWord.isNullOrBlank()) {
+                    sb.appendLine("Status word    :  ${formatStatusWord(card.generateAcStatusWord)}")
+                }
+                if (!card.generateAcDebug.isNullOrBlank()) {
+                    sb.appendLine("Reason         :  ${card.generateAcDebug}")
+                }
+                sb.appendLine("See APDU Log   :  Check the GENERATE AC exchange")
             }
             sb.appendLine()
         }
@@ -226,6 +235,11 @@ class CardDetailFragment : Fragment() {
     }
 
     private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
+    private fun formatStatusWord(swHex: String?): String {
+        val clean = swHex?.replace(" ", "")?.uppercase().orEmpty()
+        return if (clean.length == 4) "${clean.substring(0, 2)} ${clean.substring(2, 4)}" else "N/A"
+    }
 
     private fun aipFlagSet(aipHex: String, mask: Int): Boolean {
         if (aipHex.length < 2) return false

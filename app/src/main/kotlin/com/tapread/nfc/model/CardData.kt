@@ -29,6 +29,9 @@ data class CardData(
     val supportsCda: Boolean? = null,
     val cdaExecuted: Boolean? = null,
     val generateAcResult: GenerateAcResult? = null,
+    val generateAcStatusWord: String? = null,
+    val generateAcDebug: String? = null,
+    val cdol1Present: Boolean? = null,
     // CPLC
     val cplcData: String? = null,
     // Wallet/tokenization
