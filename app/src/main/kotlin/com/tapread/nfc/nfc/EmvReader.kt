@@ -101,7 +101,7 @@ class EmvReader {
         val cplcData = extractCplc(emvCard)
         val aipHex = extractAip(logger)
         val supportsCda = aipHex?.let {
-            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x01 != 0)
+            it.length >= 2 && ((it.substring(0, 2).toIntOrNull(16) ?: 0) and 0x02 != 0)
         }
         val generateAcResult = try {
             performGenerateAc(provider, extractTagValueFromLog(logger, "8C"))
