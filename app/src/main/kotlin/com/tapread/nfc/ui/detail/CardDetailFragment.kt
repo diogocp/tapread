@@ -165,7 +165,13 @@ class CardDetailFragment : Fragment() {
                 sb.appendLine("Cryptogram type:  ${generateAc.cryptogramType}")
                 sb.appendLine("Cryptogram (AC):  ${generateAc.cryptogramHex ?: "N/A"}")
                 sb.appendLine("CID            :  ${generateAc.cidHex ?: "N/A"}")
-                sb.appendLine("CDA executed   :  ${yesNo(card.cdaExecuted == true)}")
+                sb.appendLine("CDA requested  :  ${yesNo(generateAc.cdaRequested)}")
+                sb.appendLine("CDA signature  :  ${yesNo(generateAc.cdaSignatureIncluded)}")
+                if (generateAc.sdadHex != null) {
+                    sb.appendLine("SDAD (9F4B)    :  ${generateAc.sdadHex}")
+                } else if (generateAc.cdaRequested) {
+                    sb.appendLine("SDAD (9F4B)    :  Not returned (card produced ${generateAc.cryptogramType} without a CDA signature)")
+                }
                 sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
                 sb.appendLine("Status word    :  ${formatStatusWord(card.generateAcStatusWord)}")
             } else {

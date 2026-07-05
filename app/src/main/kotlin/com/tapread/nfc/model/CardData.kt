@@ -93,9 +93,11 @@ data class GenerateAcResult(
     val cryptogramType: String,
     val cryptogramHex: String?,
     val cidHex: String?,
-    val cdaSignatureIncluded: Boolean,
+    val cdaSignatureIncluded: Boolean,   // true when the card returned an SDAD (tag 9F4B)
     val atcHex: String?,
-    val rawResponseHex: String?
+    val rawResponseHex: String?,
+    val cdaRequested: Boolean = false,   // whether P1 asked for a CDA signature (0x10 bit)
+    val sdadHex: String? = null          // Signed Dynamic Application Data (9F4B) — CDA evidence
 )
 
 data class InternalAuthResult(

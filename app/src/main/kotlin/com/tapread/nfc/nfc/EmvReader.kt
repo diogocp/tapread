@@ -141,7 +141,7 @@ class EmvReader {
         val internalAuthAttempt: InternalAuthAttempt
         if (activeProbing) {
             generateAcAttempt = try {
-                performGenerateAc(provider, cdol1Hex)
+                performGenerateAc(provider, cdol1Hex, requestCda = supportsCda == true)
             } catch (e: Exception) {
                 log.warn("GENERATE AC failed: {}", e.message)
                 GenerateAcAttempt(
@@ -322,7 +322,7 @@ class EmvReader {
         return result
     }
 
-    private fun performGenerateAc(provider: IsoDepProvider, cdolHex: String?): GenerateAcAttempt {
+    private fun performGenerateAc(provider: IsoDepProvider, cdolHex: String?, requestCda: Boolean): GenerateAcAttempt {
         if (cdolHex.isNullOrBlank()) {
             log.info("No CDOL1 found; skipping GENERATE AC")
             return GenerateAcAttempt(
@@ -342,10 +342,17 @@ class EmvReader {
 
         val dataHex = buildGenerateAcData(cdol)
         val dataBytes = hexToBytes(dataHex)
+        // P1 (Reference Control Parameter):
+        //   bits 8-7: requested cryptogram type — 0x80 = ARQC (online)
+        //   bit 5   : 0x10 = CDA (Combined DDA/AC) signature requested
+        // ARQC + CDA (0x90) asks the card to return the Signed Dynamic Application
+        // Data (tag 9F4B) — the offline-verifiable CDA evidence. Plain ARQC (0x80)
+        // is used only when the card does not advertise CDA support.
+        val p1 = if (requestCda) 0x90 else 0x80
         val command = byteArrayOf(
             0x80.toByte(),
             0xAE.toByte(),
-            0x80.toByte(),
+            p1.toByte(),
             0x00.toByte(),
             dataBytes.size.toByte()
         ) + dataBytes + byteArrayOf(0x00)
@@ -373,6 +380,9 @@ class EmvReader {
         val cidHexFromTlv = extractTagValue(response, "9F27")
         val acHexFromTlv = extractTagValue(response, "9F26")
         val atcHexFromTlv = extractTagValue(response, "9F36")
+        // With CDA, the AC is embedded in the Signed Dynamic Application Data (9F4B),
+        // and the plaintext 9F26 is typically absent — this is the CDA evidence.
+        val sdadHex = extractTagValue(response, "9F4B")
         val template80 = extractTagValue(response, "80")
 
         val cidHex = cidHexFromTlv ?: template80?.takeIf { it.length >= 2 }?.substring(0, 2)
@@ -390,15 +400,20 @@ class EmvReader {
             0x80 -> "ARQC"
             else -> "RFU"
         }
+        if (requestCda && sdadHex == null) {
+            log.info("CDA requested (P1={}) but card returned {} without an SDAD (9F4B)", "%02X".format(p1), cryptogramType)
+        }
 
         return GenerateAcAttempt(
             result = GenerateAcResult(
                 cryptogramType = cryptogramType,
                 cryptogramHex = cryptogramHex,
                 cidHex = cidHex,
-                cdaSignatureIncluded = cidValue and 0x20 != 0,
+                cdaSignatureIncluded = sdadHex != null,
                 atcHex = atcHex,
-                rawResponseHex = HexUtil.toHex(response)
+                rawResponseHex = HexUtil.toHex(response),
+                cdaRequested = requestCda,
+                sdadHex = sdadHex
             ),
             cdol1Present = true,
             statusWordHex = swHex
