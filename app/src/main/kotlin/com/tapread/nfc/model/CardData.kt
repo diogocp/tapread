@@ -34,6 +34,7 @@ data class CardData(
     val cdol1Present: Boolean? = null,
     // DDA / INTERNAL AUTHENTICATE
     val supportsDda: Boolean? = null,
+    val internalAuthAttempted: Boolean = false,
     val internalAuthResult: InternalAuthResult? = null,
     val internalAuthStatusWord: String? = null,
     val internalAuthDebug: String? = null,

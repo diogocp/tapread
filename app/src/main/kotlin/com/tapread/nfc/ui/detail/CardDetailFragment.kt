@@ -190,7 +190,7 @@ class CardDetailFragment : Fragment() {
                     sb.appendLine("SDAD received  :  ${internalAuth.sdadHex ?: "N/A"}")
                     sb.appendLine("Status word    :  ${formatStatusWord(internalAuth.statusWordHex)}")
                 } else {
-                    sb.appendLine("DDA attempted  :  ${yesNo(card.supportsDda == true)}")
+                    sb.appendLine("DDA attempted  :  ${yesNo(card.internalAuthAttempted)}")
                     if (!card.internalAuthStatusWord.isNullOrBlank()) {
                         sb.appendLine("Status word    :  ${formatStatusWord(card.internalAuthStatusWord)}")
                     }

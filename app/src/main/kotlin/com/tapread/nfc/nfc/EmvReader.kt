@@ -144,7 +144,7 @@ class EmvReader {
         } else {
             InternalAuthAttempt(
                 attempted = false,
-                debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else null
+                debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else "AIP not found, cannot determine DDA support"
             )
         }
         val generateAcResult = generateAcAttempt.result
@@ -181,6 +181,7 @@ class EmvReader {
             generateAcDebug = generateAcAttempt.debugMessage,
             cdol1Present = generateAcAttempt.cdol1Present,
             internalAuthResult = internalAuthAttempt.result,
+            internalAuthAttempted = internalAuthAttempt.attempted,
             internalAuthStatusWord = internalAuthAttempt.statusWordHex,
             internalAuthDebug = internalAuthAttempt.debugMessage,
             walletType = walletInfo.first,
