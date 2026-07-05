@@ -97,8 +97,36 @@ data class GenerateAcResult(
     val atcHex: String?,
     val rawResponseHex: String?,
     val cdaRequested: Boolean = false,   // whether P1 asked for a CDA signature (0x10 bit)
-    val sdadHex: String? = null          // Signed Dynamic Application Data (9F4B) — CDA evidence
+    val sdadHex: String? = null,         // Signed Dynamic Application Data (9F4B) — CDA evidence
+    val unHex: String? = null,           // Unpredictable Number (9F37) sent — needed to verify the SDAD
+    val cdaVerification: CdaVerification? = null
 )
+
+/**
+ * Result of offline CDA verification: recover the Issuer public key from the scheme CA key,
+ * recover the ICC public key from the Issuer key, then recover the SDAD (9F4B) with the ICC key
+ * and check its hash binds the terminal's Unpredictable Number (proves a fresh, CA-chained
+ * signature). The SDAD's internal transaction-data hash is extracted but not recomputed.
+ */
+data class CdaVerification(
+    val attempted: Boolean,
+    val overallVerified: Boolean,
+    val steps: List<CdaStep> = emptyList(),
+    val caRidHex: String? = null,
+    val caIndexHex: String? = null,
+    val recoveredAcHex: String? = null,          // AC recovered from inside the SDAD
+    val iccDynamicNumberHex: String? = null,
+    val transactionDataHashHex: String? = null,  // extracted from SDAD, not recomputed
+    val summary: String? = null
+)
+
+data class CdaStep(
+    val name: String,
+    val status: CdaStepStatus,
+    val detail: String? = null
+)
+
+enum class CdaStepStatus { PASS, FAIL, SKIPPED, INFO }
 
 data class InternalAuthResult(
     val challengeHex: String,

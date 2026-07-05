@@ -25,6 +25,8 @@ import com.tapread.nfc.model.ScanResult
 import com.tapread.nfc.model.TngData
 import com.tapread.nfc.nfc.NfcDispatcher
 import com.tapread.nfc.ui.CardsViewModel
+import com.tapread.nfc.util.CaPublicKey
+import com.tapread.nfc.util.CaPublicKeyStore
 import com.tapread.nfc.ui.about.AboutFragment
 import com.tapread.nfc.ui.home.HomeFragment
 import com.tapread.nfc.ui.settings.SettingsFragment
@@ -44,6 +46,17 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
     private lateinit var drawerToggle: ActionBarDrawerToggle
     private val viewModel: CardsViewModel by viewModels()
     private val emvReader = EmvReader()
+
+    /** Scheme CA public keys for offline CDA verification, loaded from the ca_public_keys.json asset. */
+    private val caKeys: List<CaPublicKey> by lazy {
+        try {
+            val json = assets.open("ca_public_keys.json").bufferedReader().use { it.readText() }
+            CaPublicKeyStore.parse(json)
+        } catch (e: Exception) {
+            log.warn("Failed to load CA public keys: {}", e.message)
+            emptyList()
+        }
+    }
 
     // Re-enable NFC when user toggles it back on
     private val nfcStateReceiver = object : BroadcastReceiver() {
@@ -245,7 +258,7 @@ class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelecte
                         ScanResult(tng = tngData, error = tngData.error)
                     }
                     NfcDispatcher.getIsoDep(tag) != null -> {
-                        emvReader.read(NfcDispatcher.getIsoDep(tag)!!, activeProbing = viewModel.activeProbing)
+                        emvReader.read(NfcDispatcher.getIsoDep(tag)!!, activeProbing = viewModel.activeProbing, caKeys = caKeys)
                     }
                     else -> {
                         val uid = tag.id?.let { com.tapread.nfc.util.HexUtil.toHex(it) } ?: "unknown"

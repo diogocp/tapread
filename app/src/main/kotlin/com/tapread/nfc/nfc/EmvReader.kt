@@ -5,6 +5,8 @@ import com.github.devnied.emvnfccard.model.Application
 import com.github.devnied.emvnfccard.model.EmvCard
 import com.github.devnied.emvnfccard.parser.EmvTemplate
 import com.tapread.nfc.model.*
+import com.tapread.nfc.util.CaPublicKey
+import com.tapread.nfc.util.EmvCdaVerifier
 import com.tapread.nfc.util.EmvDiagnosticsAnalyzer
 import com.tapread.nfc.util.HexUtil
 import org.slf4j.LoggerFactory
@@ -32,7 +34,7 @@ class EmvReader {
         val debugMessage: String? = null
     )
 
-    fun read(isoDep: IsoDep, activeProbing: Boolean = false): ScanResult {
+    fun read(isoDep: IsoDep, activeProbing: Boolean = false, caKeys: List<CaPublicKey> = emptyList()): ScanResult {
         val logger = ApduLogger()
         val provider = IsoDepProvider(logger)
 
@@ -55,7 +57,7 @@ class EmvReader {
 
         return try {
             val emvCard: EmvCard = template.readEmvCard()
-            val cardData = extractCardData(emvCard, provider, logger, activeProbing)
+            val cardData = extractCardData(emvCard, provider, logger, activeProbing, caKeys)
             ScanResult(card = cardData, apduLog = logger.entries)
         } catch (e: Exception) {
             log.error("EMV read failed", e)
@@ -79,7 +81,7 @@ class EmvReader {
         }
     }
 
-    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger, activeProbing: Boolean): CardData {
+    private fun extractCardData(emvCard: EmvCard, provider: IsoDepProvider, logger: ApduLogger, activeProbing: Boolean, caKeys: List<CaPublicKey>): CardData {
         val pan = emvCard.cardNumber
         val expiry = emvCard.expireDate
         val holder = buildHolderName(emvCard)
@@ -176,7 +178,29 @@ class EmvReader {
                 debugMessage = "Active EMV probing disabled — INTERNAL AUTHENTICATE not sent"
             )
         }
-        val generateAcResult = generateAcAttempt.result
+        // ── Offline CDA verification (when a CDA SDAD was obtained) ──
+        var generateAcResult = generateAcAttempt.result
+        if (generateAcResult?.sdadHex != null) {
+            val tags = EmvCdaVerifier.CertTags(
+                aid = selectedAidForDiag,
+                caIndexHex = extractTagValueFromLog(logger, "8F"),
+                issuerCertHex = extractTagValueFromLog(logger, "90"),
+                issuerRemHex = extractTagValueFromLog(logger, "92"),
+                issuerExpHex = extractTagValueFromLog(logger, "9F32"),
+                iccCertHex = extractTagValueFromLog(logger, "9F46"),
+                iccExpHex = extractTagValueFromLog(logger, "9F47"),
+                iccRemHex = extractTagValueFromLog(logger, "9F48"),
+                sdadHex = generateAcResult.sdadHex,
+                unHex = generateAcResult.unHex
+            )
+            val verification = try {
+                EmvCdaVerifier.verify(tags, caKeys)
+            } catch (e: Exception) {
+                log.warn("CDA verification error: {}", e.message)
+                null
+            }
+            generateAcResult = generateAcResult.copy(cdaVerification = verification)
+        }
         val cdaExecuted = generateAcResult?.cdaSignatureIncluded
 
         // Contactless status
@@ -340,8 +364,8 @@ class EmvReader {
             )
         }
 
-        val dataHex = buildGenerateAcData(cdol)
-        val dataBytes = hexToBytes(dataHex)
+        val genAc = buildGenerateAcData(cdol)
+        val dataBytes = hexToBytes(genAc.dataHex)
         // P1 (Reference Control Parameter):
         //   bits 8-7: requested cryptogram type — 0x80 = ARQC (online)
         //   bit 5   : 0x10 = CDA (Combined DDA/AC) signature requested
@@ -413,7 +437,8 @@ class EmvReader {
                 atcHex = atcHex,
                 rawResponseHex = HexUtil.toHex(response),
                 cdaRequested = requestCda,
-                sdadHex = sdadHex
+                sdadHex = sdadHex,
+                unHex = genAc.unHex
             ),
             cdol1Present = true,
             statusWordHex = swHex
@@ -482,9 +507,12 @@ class EmvReader {
         )
     }
 
-    private fun buildGenerateAcData(cdol: List<Pair<String, Int>>): String {
+    private data class GenAcData(val dataHex: String, val unHex: String?)
+
+    private fun buildGenerateAcData(cdol: List<Pair<String, Int>>): GenAcData {
         val today = SimpleDateFormat("yyMMdd", Locale.US).format(Date())
-        return buildString {
+        var un: String? = null
+        val data = buildString {
             for ((tag, length) in cdol) {
                 append(
                     when (tag) {
@@ -493,12 +521,13 @@ class EmvReader {
                         "95" -> "00".repeat(length)
                         "9A" -> today.take(length * 2).padEnd(length * 2, '0')
                         "9C" -> "00".repeat(length)
-                        "9F37" -> randomHex(length)
+                        "9F37" -> randomHex(length).also { un = it }
                         else -> "00".repeat(length)
                     }
                 )
             }
         }
+        return GenAcData(data, un)
     }
 
     private fun randomHex(length: Int): String {

@@ -16,6 +16,8 @@ import com.google.android.material.snackbar.Snackbar
 import com.tapread.nfc.R
 import com.tapread.nfc.databinding.FragmentCardDetailBinding
 import com.tapread.nfc.model.CardData
+import com.tapread.nfc.model.CdaStepStatus
+import com.tapread.nfc.model.CdaVerification
 import com.tapread.nfc.model.ContactlessStatus
 import com.tapread.nfc.model.EmvDiagnostics
 import com.tapread.nfc.model.GpoFormat
@@ -174,6 +176,7 @@ class CardDetailFragment : Fragment() {
                 }
                 sb.appendLine("ATC            :  ${generateAc.atcHex ?: "N/A"}")
                 sb.appendLine("Status word    :  ${formatStatusWord(card.generateAcStatusWord)}")
+                generateAc.cdaVerification?.let { appendCdaVerification(sb, it) }
             } else {
                 sb.appendLine("GENERATE AC    :  Not available")
                 if (!card.generateAcStatusWord.isNullOrBlank()) {
@@ -332,6 +335,31 @@ class CardDetailFragment : Fragment() {
             for (n in diag.notes) sb.appendLine("  • $n")
         }
         sb.appendLine()
+    }
+
+    /** Render the offline CDA verification result. */
+    private fun appendCdaVerification(sb: StringBuilder, v: CdaVerification) {
+        sb.appendLine()
+        sb.appendLine("─── CDA Verification ────────────")
+        if (!v.attempted) {
+            sb.appendLine(v.summary ?: "Not attempted")
+            return
+        }
+        sb.appendLine("Result         :  ${if (v.overallVerified) "✅ VERIFIED" else "❌ Not verified"}")
+        for (step in v.steps) {
+            val glyph = when (step.status) {
+                CdaStepStatus.PASS -> "✅"
+                CdaStepStatus.FAIL -> "❌"
+                CdaStepStatus.SKIPPED -> "⚠️"
+                CdaStepStatus.INFO -> "ℹ️"
+            }
+            sb.appendLine("  $glyph ${step.name}")
+            if (!step.detail.isNullOrBlank()) sb.appendLine("       ${step.detail}")
+        }
+        if (v.recoveredAcHex != null) sb.appendLine("Recovered AC   :  ${v.recoveredAcHex}")
+        if (v.iccDynamicNumberHex != null) sb.appendLine("ICC dyn number :  ${v.iccDynamicNumberHex}")
+        if (v.transactionDataHashHex != null) sb.appendLine("Txn data hash  :  ${v.transactionDataHashHex}")
+        if (!v.summary.isNullOrBlank()) sb.appendLine("Summary        :  ${v.summary}")
     }
 
     private fun gpoFormatLabel(f: GpoFormat): String = when (f) {
