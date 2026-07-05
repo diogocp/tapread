@@ -174,7 +174,9 @@ class CardDetailFragment : Fragment() {
                 if (!card.generateAcDebug.isNullOrBlank()) {
                     sb.appendLine("Reason         :  ${card.generateAcDebug}")
                 }
-                sb.appendLine("See APDU Log   :  Check the GENERATE AC exchange")
+                if (card.cdol1Present == true) {
+                    sb.appendLine("See APDU Log   :  Check the GENERATE AC exchange")
+                }
             }
             sb.appendLine()
         }
