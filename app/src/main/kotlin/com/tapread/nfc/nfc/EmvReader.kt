@@ -148,6 +148,20 @@ class EmvReader {
         val generateAcAttempt: GenerateAcAttempt
         val internalAuthAttempt: InternalAuthAttempt
         if (activeProbing) {
+            // INTERNAL AUTHENTICATE first: standalone DDA precedes GENERATE AC in the EMV flow
+            // (and does NOT increment the ATC). We attempt it even when the AIP doesn't advertise
+            // DDA, to confirm the card's actual behaviour — most CDA-only cards reject it (6985/
+            // 6D00), which is expected and not a problem: dynamic auth is delivered via CDA instead.
+            val ddolHex = extractTagValueFromLog(logger, "9F49")
+            internalAuthAttempt = try {
+                performInternalAuthenticate(provider, ddolHex, aipAdvertisesDda = supportsDda == true)
+            } catch (e: Exception) {
+                log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
+                InternalAuthAttempt(
+                    attempted = true,
+                    debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
+                )
+            }
             generateAcAttempt = try {
                 performGenerateAc(provider, cdol1Hex, requestCda = supportsCda == true)
             } catch (e: Exception) {
@@ -155,23 +169,6 @@ class EmvReader {
                 GenerateAcAttempt(
                     cdol1Present = !cdol1Hex.isNullOrBlank(),
                     debugMessage = e.message ?: "Unexpected error during GENERATE AC"
-                )
-            }
-            val ddolHex = extractTagValueFromLog(logger, "9F49")
-            internalAuthAttempt = if (supportsDda == true) {
-                try {
-                    performInternalAuthenticate(provider, ddolHex)
-                } catch (e: Exception) {
-                    log.warn("INTERNAL AUTHENTICATE failed: {}", e.message)
-                    InternalAuthAttempt(
-                        attempted = true,
-                        debugMessage = e.message ?: "Unexpected error during INTERNAL AUTHENTICATE"
-                    )
-                }
-            } else {
-                InternalAuthAttempt(
-                    attempted = false,
-                    debugMessage = if (aipHex != null) "DDA not supported (AIP bit not set)" else "AIP not found, cannot determine DDA support"
                 )
             }
         } else {
@@ -479,7 +476,7 @@ class EmvReader {
         )
     }
 
-    private fun performInternalAuthenticate(provider: IsoDepProvider, ddolHex: String?): InternalAuthAttempt {
+    private fun performInternalAuthenticate(provider: IsoDepProvider, ddolHex: String?, aipAdvertisesDda: Boolean): InternalAuthAttempt {
         // Build the challenge data from DDOL, or fall back to a 4-byte unpredictable number
         val fallbackNonce = randomHex(4)
         val dataHex = if (!ddolHex.isNullOrBlank()) {
@@ -513,12 +510,17 @@ class EmvReader {
         val swHex = "%04X".format(sw)
 
         if (sw != 0x9000) {
-            val reason = when (sw) {
+            val base = when (sw) {
                 0x6985 -> "Conditions not satisfied"
                 0x6D00 -> "Instruction not supported"
+                0x6A81 -> "Function not supported"
                 0x6984 -> "Invalid data"
                 else -> "Card rejected INTERNAL AUTHENTICATE"
             }
+            // Expected for a CDA-only card: standalone DDA isn't offered; dynamic auth is via CDA.
+            val reason = if (!aipAdvertisesDda)
+                "$base — DDA not advertised by AIP (expected: this card uses CDA via GENERATE AC → 9F4B)"
+            else base
             log.info("INTERNAL AUTHENTICATE rejected with SW={}", swHex)
             return InternalAuthAttempt(
                 attempted = true,
@@ -528,6 +530,8 @@ class EmvReader {
         }
 
         val sdadHex = extractTagValue(response, "9F4B")
+        val note = if (!aipAdvertisesDda)
+            "Card signed a DDA challenge even though its AIP did not advertise DDA" else null
 
         return InternalAuthAttempt(
             result = InternalAuthResult(
@@ -537,7 +541,8 @@ class EmvReader {
                 rawResponseHex = HexUtil.toHex(response)
             ),
             attempted = true,
-            statusWordHex = swHex
+            statusWordHex = swHex,
+            debugMessage = note
         )
     }
 

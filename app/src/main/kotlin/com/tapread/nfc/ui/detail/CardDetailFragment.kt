@@ -193,13 +193,16 @@ class CardDetailFragment : Fragment() {
 
             if (card.supportsDda != null) {
                 sb.appendLine("─── INTERNAL AUTHENTICATE (DDA) ─")
-                sb.appendLine("DDA supported  :  ${yesNo(card.supportsDda == true)}")
+                sb.appendLine("DDA advertised (AIP):  ${yesNo(card.supportsDda == true)}")
                 val internalAuth = card.internalAuthResult
                 if (internalAuth != null) {
                     sb.appendLine("DDA attempted  :  Yes")
                     sb.appendLine("Challenge sent :  ${internalAuth.challengeHex}")
                     sb.appendLine("SDAD received  :  ${internalAuth.sdadHex ?: "N/A"}")
                     sb.appendLine("Status word    :  ${formatStatusWord(internalAuth.statusWordHex)}")
+                    if (!internalAuth.statusWordHex.isNullOrBlank() && internalAuth.sdadHex == null) {
+                        sb.appendLine("(9000 but no SDAD returned)")
+                    }
                 } else {
                     sb.appendLine("DDA attempted  :  ${yesNo(card.internalAuthAttempted)}")
                     if (!card.internalAuthStatusWord.isNullOrBlank()) {
