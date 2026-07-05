@@ -9,6 +9,7 @@ import com.tapread.nfc.util.CaPublicKey
 import com.tapread.nfc.util.EmvCdaVerifier
 import com.tapread.nfc.util.EmvDiagnosticsAnalyzer
 import com.tapread.nfc.util.HexUtil
+import com.tapread.nfc.util.TlvParser
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
@@ -336,7 +337,7 @@ class EmvReader {
         var pos = 0
 
         while (pos + 4 <= clean.length) {
-            val (tag, nextPos) = readTag(clean, pos) ?: break
+            val (tag, nextPos) = TlvParser.readTag(clean, pos) ?: break
             if (nextPos + 2 > clean.length) break
             val length = clean.substring(nextPos, nextPos + 2).toIntOrNull(16) ?: break
             result.add(tag to length)
@@ -547,68 +548,8 @@ class EmvReader {
         return findTagValue(HexUtil.toHex(response), tagHex.uppercase())
     }
 
-    private fun findTagValue(hexResponse: String, tagHex: String): String? {
-        val clean = hexResponse.replace(" ", "").uppercase()
-        val data = if (clean.length >= 4) clean.dropLast(4) else clean
-        return findTagValueInTlv(data, tagHex)
-    }
-
-    private fun findTagValueInTlv(hex: String, tagHex: String): String? {
-        var pos = 0
-        while (pos + 4 <= hex.length) {
-            val (tag, nextPos) = readTag(hex, pos) ?: break
-            val (length, valueStart) = readLength(hex, nextPos) ?: break
-            val valueEnd = valueStart + length * 2
-            if (valueEnd > hex.length) break
-
-            val value = hex.substring(valueStart, valueEnd)
-            if (tag == tagHex) return value
-            if (isConstructedTag(tag)) {
-                findTagValueInTlv(value, tagHex)?.let { return it }
-            }
-            pos = valueEnd
-        }
-        return null
-    }
-
-    private fun readTag(hex: String, start: Int): Pair<String, Int>? {
-        if (start + 2 > hex.length) return null
-        val firstByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
-        if ((firstByte and 0x1F) != 0x1F) {
-            return hex.substring(start, start + 2) to (start + 2)
-        }
-
-        var pos = start + 2
-        while (pos + 2 <= hex.length) {
-            val nextByte = hex.substring(pos, pos + 2).toIntOrNull(16) ?: return null
-            pos += 2
-            if (nextByte and 0x80 == 0) {
-                return hex.substring(start, pos) to pos
-            }
-        }
-        return null
-    }
-
-    private fun readLength(hex: String, start: Int): Pair<Int, Int>? {
-        if (start + 2 > hex.length) return null
-        val lenByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
-        return when {
-            lenByte and 0x80 == 0 -> lenByte to (start + 2)
-            lenByte == 0x81 -> {
-                if (start + 4 > hex.length) null
-                else (hex.substring(start + 2, start + 4).toIntOrNull(16) ?: return null) to (start + 4)
-            }
-            lenByte == 0x82 -> {
-                if (start + 6 > hex.length) null
-                else (hex.substring(start + 2, start + 6).toIntOrNull(16) ?: return null) to (start + 6)
-            }
-            else -> null
-        }
-    }
-
-    private fun isConstructedTag(tag: String): Boolean {
-        return tag.length >= 2 && (((tag.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20) != 0)
-    }
+    private fun findTagValue(hexResponse: String, tagHex: String): String? =
+        TlvParser.findValue(hexResponse, tagHex)
 
     private fun hexToBytes(hex: String): ByteArray {
         val clean = hex.replace(" ", "").uppercase()

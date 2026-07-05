@@ -379,26 +379,15 @@ class CardDetailFragment : Fragment() {
         return byte1 and mask != 0
     }
 
-    /** Extract a specific EMV tag value from the APDU log responses */
+    /** Extract a specific EMV tag value from the APDU log responses (proper BER-TLV search). */
     private fun extractTagFromApdu(
         apduLog: List<com.tapread.nfc.model.ApduEntry>,
         tagHex: String
     ): String? {
-        val tag = tagHex.uppercase()
         for (entry in apduLog) {
-            if (entry.response.size < 6) continue
-            val hex = com.tapread.nfc.util.HexUtil.toHex(entry.response).uppercase()
-            val pos = hex.indexOf(tag)
-            if (pos < 0) continue
-            // Read length after tag
-            val lenStart = pos + tag.length
-            if (lenStart + 2 > hex.length) continue
-            val lenByte = hex.substring(lenStart, lenStart + 2).toIntOrNull(16) ?: continue
-            val valStart = lenStart + 2
-            val valEnd = valStart + lenByte * 2
-            if (valEnd <= hex.length) {
-                return hex.substring(valStart, valEnd)
-            }
+            com.tapread.nfc.util.TlvParser.findValue(
+                com.tapread.nfc.util.HexUtil.toHex(entry.response), tagHex
+            )?.let { return it }
         }
         return null
     }

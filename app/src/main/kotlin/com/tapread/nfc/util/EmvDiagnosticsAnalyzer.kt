@@ -152,8 +152,7 @@ object EmvDiagnosticsAnalyzer {
 
     /** Top-level tag of a GPO response: 80 = Format 1, 77 = Format 2. */
     fun detectGpoFormat(gpoResponseHex: String): GpoFormat {
-        val clean = stripSw(gpoResponseHex)
-        return when (firstTag(clean)) {
+        return when (TlvParser.firstTag(gpoResponseHex)) {
             "80" -> GpoFormat.FORMAT_1
             "77" -> GpoFormat.FORMAT_2
             else -> GpoFormat.UNKNOWN
@@ -167,23 +166,21 @@ object EmvDiagnosticsAnalyzer {
      * Format 2 (constructed tag 77): AFL is the value of tag 94.
      */
     fun extractAfl(gpoResponseHex: String): String? {
-        val clean = stripSw(gpoResponseHex)
-        return if (firstTag(clean) == "80") {
-            val v = topLevelValueOf(clean, "80") ?: return null
+        return if (TlvParser.firstTag(gpoResponseHex) == "80") {
+            val v = TlvParser.topLevelValue(gpoResponseHex, "80") ?: return null
             if (v.length < 4) return null
             v.substring(4).ifEmpty { null }
         } else {
-            findTagValueInTlv(clean, "94")
+            TlvParser.findValue(gpoResponseHex, "94")
         }
     }
 
     /** Extract the 2-byte AIP (4 hex chars) from a GPO response, handling both formats. */
     fun extractAip(gpoResponseHex: String): String? {
-        val clean = stripSw(gpoResponseHex)
-        if (firstTag(clean) == "80") {
-            topLevelValueOf(clean, "80")?.let { if (it.length >= 4) return it.substring(0, 4) }
+        if (TlvParser.firstTag(gpoResponseHex) == "80") {
+            TlvParser.topLevelValue(gpoResponseHex, "80")?.let { if (it.length >= 4) return it.substring(0, 4) }
         } else {
-            findTagValueInTlv(clean, "82")?.let { if (it.length >= 4) return it.substring(0, 4) }
+            TlvParser.findValue(gpoResponseHex, "82")?.let { if (it.length >= 4) return it.substring(0, 4) }
         }
         return null
     }
@@ -250,8 +247,7 @@ object EmvDiagnosticsAnalyzer {
 
     /** True if [tag] appears anywhere in the pool (SW stripped, recurses constructed tags). */
     fun tagPresentInPool(pool: List<String>, tag: String): Boolean {
-        val want = tag.uppercase()
-        return pool.any { findTagValue(it, want) != null }
+        return pool.any { TlvParser.findValue(it, tag) != null }
     }
 
     // ── PDOL (9F38) ──
@@ -259,7 +255,7 @@ object EmvDiagnosticsAnalyzer {
     /** PDOL hex from the last SELECT-AID FCI response that carries tag 9F38. */
     fun extractPdol(logEntries: List<ApduEntry>): String? {
         return logEntries.filter { it.label == "SELECT" }.asReversed()
-            .firstNotNullOfOrNull { findTagValue(HexUtil.toHex(it.response), "9F38") }
+            .firstNotNullOfOrNull { TlvParser.findValue(HexUtil.toHex(it.response), "9F38") }
     }
 
     /** Parse a DOL (tag-length pairs) into named items. */
@@ -268,7 +264,7 @@ object EmvDiagnosticsAnalyzer {
         val out = mutableListOf<DolItem>()
         var pos = 0
         while (pos + 4 <= clean.length) {
-            val (tag, next) = readTag(clean, pos) ?: break
+            val (tag, next) = TlvParser.readTag(clean, pos) ?: break
             if (next + 2 > clean.length) break
             val len = clean.substring(next, next + 2).toIntOrNull(16) ?: break
             out.add(DolItem(tag, len, TlvParser.tagName(tag)))
@@ -286,12 +282,11 @@ object EmvDiagnosticsAnalyzer {
      */
     fun inspectVisaGpo(gpoResponseHex: String?): List<GpoDynamicTag> {
         if (gpoResponseHex == null) return emptyList()
-        val clean = stripSw(gpoResponseHex)
         return VISA_GPO_TAGS.map { tag ->
             GpoDynamicTag(
                 tag = tag,
                 name = TlvParser.tagName(tag),
-                present = findTagValueInTlv(clean, tag) != null
+                present = TlvParser.findValue(gpoResponseHex, tag) != null
             )
         }
     }
@@ -359,87 +354,4 @@ object EmvDiagnosticsAnalyzer {
         }
     }
 
-    // ── TLV helpers (mirror EmvReader's private helpers) ──
-
-    /** Drop the trailing 2-byte status word if present. */
-    private fun stripSw(hexResponse: String): String {
-        val clean = hexResponse.replace(" ", "").uppercase()
-        return if (clean.length >= 4) clean.dropLast(4) else clean
-    }
-
-    private fun firstTag(hex: String): String? = readTag(hex, 0)?.first
-
-    /** Value of a tag found at the TOP level only (no recursion into constructed tags). */
-    private fun topLevelValueOf(hex: String, wantTag: String): String? {
-        var pos = 0
-        while (pos + 4 <= hex.length) {
-            val (tag, next) = readTag(hex, pos) ?: break
-            val (length, valueStart) = readLength(hex, next) ?: break
-            val valueEnd = valueStart + length * 2
-            if (valueEnd > hex.length) break
-            if (tag == wantTag) return hex.substring(valueStart, valueEnd)
-            pos = valueEnd
-        }
-        return null
-    }
-
-    private fun findTagValue(hexResponse: String, tagHex: String): String? {
-        return findTagValueInTlv(stripSw(hexResponse), tagHex.uppercase())
-    }
-
-    private fun findTagValueInTlv(hex: String, tagHex: String): String? {
-        var pos = 0
-        while (pos + 4 <= hex.length) {
-            val (tag, nextPos) = readTag(hex, pos) ?: break
-            val (length, valueStart) = readLength(hex, nextPos) ?: break
-            val valueEnd = valueStart + length * 2
-            if (valueEnd > hex.length) break
-
-            val value = hex.substring(valueStart, valueEnd)
-            if (tag == tagHex) return value
-            if (isConstructedTag(tag)) {
-                findTagValueInTlv(value, tagHex)?.let { return it }
-            }
-            pos = valueEnd
-        }
-        return null
-    }
-
-    private fun readTag(hex: String, start: Int): Pair<String, Int>? {
-        if (start + 2 > hex.length) return null
-        val firstByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
-        if ((firstByte and 0x1F) != 0x1F) {
-            return hex.substring(start, start + 2) to (start + 2)
-        }
-        var pos = start + 2
-        while (pos + 2 <= hex.length) {
-            val nextByte = hex.substring(pos, pos + 2).toIntOrNull(16) ?: return null
-            pos += 2
-            if (nextByte and 0x80 == 0) {
-                return hex.substring(start, pos) to pos
-            }
-        }
-        return null
-    }
-
-    private fun readLength(hex: String, start: Int): Pair<Int, Int>? {
-        if (start + 2 > hex.length) return null
-        val lenByte = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
-        return when {
-            lenByte and 0x80 == 0 -> lenByte to (start + 2)
-            lenByte == 0x81 -> {
-                if (start + 4 > hex.length) null
-                else (hex.substring(start + 2, start + 4).toIntOrNull(16) ?: return null) to (start + 4)
-            }
-            lenByte == 0x82 -> {
-                if (start + 6 > hex.length) null
-                else (hex.substring(start + 2, start + 6).toIntOrNull(16) ?: return null) to (start + 6)
-            }
-            else -> null
-        }
-    }
-
-    private fun isConstructedTag(tag: String): Boolean {
-        return tag.length >= 2 && (((tag.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20) != 0)
-    }
 }

@@ -15,70 +15,110 @@ object TlvParser {
         val depth: Int = 0
     )
 
-    /** Parse a hex response string into TLV nodes, stripping SW (last 2 bytes) */
-    fun parse(hexResponse: String): List<TlvNode> {
-        val clean = hexResponse.replace(" ", "").uppercase()
-        // Strip status word (last 4 hex chars = 2 bytes) if present
-        val data = if (clean.length >= 4 && clean.takeLast(4).matches(Regex("[0-9A-F]{4}"))) {
-            clean.dropLast(4)
-        } else clean
-        return parseNodes(data, 0)
-    }
+    /** Parse a hex response string into TLV nodes, stripping a trailing status word. */
+    fun parse(hexResponse: String): List<TlvNode> = parseNodes(stripStatusWord(hexResponse), 0)
 
     private fun parseNodes(hex: String, depth: Int): List<TlvNode> {
         val nodes = mutableListOf<TlvNode>()
         var pos = 0
-        while (pos < hex.length - 3) {
-            try {
-                // Read tag (1 or 2 bytes)
-                val tagByte = hex.substring(pos, pos + 2).toInt(16)
-                val tag: String
-                if ((tagByte and 0x1F) == 0x1F) {
-                    // Multi-byte tag
-                    if (pos + 4 > hex.length) break
-                    tag = hex.substring(pos, pos + 4)
-                    pos += 4
-                } else {
-                    tag = hex.substring(pos, pos + 2)
-                    pos += 2
-                }
-
-                if (pos + 2 > hex.length) break
-
-                // Read length
-                val lenByte = hex.substring(pos, pos + 2).toInt(16)
-                val length: Int
-                if (lenByte == 0x81) {
-                    pos += 2
-                    if (pos + 2 > hex.length) break
-                    length = hex.substring(pos, pos + 2).toInt(16)
-                    pos += 2
-                } else if (lenByte == 0x82) {
-                    pos += 2
-                    if (pos + 4 > hex.length) break
-                    length = hex.substring(pos, pos + 4).toInt(16)
-                    pos += 4
-                } else {
-                    length = lenByte
-                    pos += 2
-                }
-
-                val valueEnd = pos + length * 2
-                if (valueEnd > hex.length) break
-                val value = hex.substring(pos, valueEnd)
-
-                val tagName = EMV_TAGS[tag] ?: "Unknown"
-                val isConstructed = (tag.substring(0, 2).toInt(16) and 0x20) != 0
-
-                val children = if (isConstructed && value.length >= 4) {
-                    try { parseNodes(value, depth + 1) } catch (_: Exception) { emptyList() }
-                } else emptyList()
-
-                nodes.add(TlvNode(tag, tagName, length, value, children, depth))
-                pos = valueEnd
-            } catch (_: Exception) { break }
+        while (pos + 2 <= hex.length) {
+            val (tag, afterTag) = readTag(hex, pos) ?: break
+            val (length, valueStart) = readLength(hex, afterTag) ?: break
+            val valueEnd = valueStart + length * 2
+            if (valueEnd > hex.length) break
+            val value = hex.substring(valueStart, valueEnd)
+            val children = if (isConstructed(tag) && value.isNotEmpty()) {
+                parseNodes(value, depth + 1)
+            } else emptyList()
+            nodes.add(TlvNode(tag, EMV_TAGS[tag] ?: "Unknown", length, value, children, depth))
+            pos = valueEnd
         }
         return nodes
+    }
+
+    // ── Robust BER-TLV primitives + queries (single source of truth) ──
+
+    private fun normalize(hex: String): String = hex.replace(" ", "").replace(":", "").uppercase()
+
+    /** Drop a trailing 2-byte status word (SW1SW2) if present. */
+    fun stripStatusWord(hex: String): String {
+        val clean = normalize(hex)
+        return if (clean.length >= 4) clean.dropLast(4) else clean
+    }
+
+    /** True if the tag's first byte marks a constructed data object (bit 6 / 0x20 set). */
+    fun isConstructed(tag: String): Boolean =
+        tag.length >= 2 && ((tag.substring(0, 2).toIntOrNull(16) ?: 0) and 0x20) != 0
+
+    /** Read a BER tag starting at [start]; returns (tag, indexAfterTag) or null. */
+    fun readTag(hex: String, start: Int): Pair<String, Int>? {
+        if (start + 2 > hex.length) return null
+        val first = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
+        if ((first and 0x1F) != 0x1F) return hex.substring(start, start + 2) to (start + 2)
+        var pos = start + 2
+        while (pos + 2 <= hex.length) {
+            val b = hex.substring(pos, pos + 2).toIntOrNull(16) ?: return null
+            pos += 2
+            if (b and 0x80 == 0) return hex.substring(start, pos) to pos
+        }
+        return null
+    }
+
+    /**
+     * Read a BER definite-form length starting at [start]; returns (length, valueStart) or null.
+     * Handles short form and long form 0x81..0x84; rejects indefinite (0x80) and absurd lengths.
+     */
+    fun readLength(hex: String, start: Int): Pair<Int, Int>? {
+        if (start + 2 > hex.length) return null
+        val first = hex.substring(start, start + 2).toIntOrNull(16) ?: return null
+        if (first and 0x80 == 0) return first to (start + 2)      // short form
+        val numBytes = first and 0x7F                             // long form: count of length bytes
+        if (numBytes == 0 || numBytes > 4) return null            // 0x80 indefinite / too large → reject
+        val lenStart = start + 2
+        val lenEnd = lenStart + numBytes * 2
+        if (lenEnd > hex.length) return null
+        val len = hex.substring(lenStart, lenEnd).toIntOrNull(16) ?: return null
+        // Reject lengths that would overflow `valueStart + len * 2` (Int) in the walkers,
+        // which would otherwise defeat the bounds check and throw on substring.
+        if (len < 0 || len > Int.MAX_VALUE / 2) return null
+        return len to lenEnd
+    }
+
+    /** First top-level tag of a response (status word stripped), or null. */
+    fun firstTag(hex: String): String? = readTag(stripStatusWord(hex), 0)?.first
+
+    /** Value (hex) of [tag], searched recursively through constructed objects. SW stripped. */
+    fun findValue(hex: String, tag: String): String? = search(stripStatusWord(hex), tag.uppercase())
+
+    /** Value (hex) of [tag] found only at the top level (no recursion). SW stripped. */
+    fun topLevelValue(hex: String, tag: String): String? {
+        val want = tag.uppercase()
+        val data = stripStatusWord(hex)
+        var pos = 0
+        while (pos + 2 <= data.length) {
+            val (t, afterTag) = readTag(data, pos) ?: break
+            val (len, valStart) = readLength(data, afterTag) ?: break
+            val valEnd = valStart + len * 2
+            if (valEnd > data.length) break
+            if (t.equals(want, true)) return data.substring(valStart, valEnd)
+            pos = valEnd
+        }
+        return null
+    }
+
+    private fun search(data: String, want: String): String? {
+        var pos = 0
+        while (pos + 2 <= data.length) {
+            val (tag, afterTag) = readTag(data, pos) ?: break
+            val (len, valStart) = readLength(data, afterTag) ?: break
+            val valEnd = valStart + len * 2
+            if (valEnd > data.length) break
+            val value = data.substring(valStart, valEnd)
+            if (tag.equals(want, true)) return value
+            if (isConstructed(tag)) search(value, want)?.let { return it }
+            pos = valEnd
+        }
+        return null
     }
 
     /** Format TLV tree as indented text */
