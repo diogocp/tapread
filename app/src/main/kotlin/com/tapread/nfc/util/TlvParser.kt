@@ -200,7 +200,7 @@ object TlvParser {
             "Cardholder verification supported: ${yesNo(byte1 and 0x20 != 0)}",
             "Terminal risk management: ${yesNo(byte1 and 0x10 != 0)}",
             "Issuer authentication supported: ${yesNo(byte1 and 0x08 != 0)}",
-            "CDA supported: ${yesNo(byte1 and 0x01 != 0)}",
+            "CDA supported: ${yesNo(byte1 and 0x02 != 0)}",
             "EMV mode supported (contactless): ${yesNo(byte2 and 0x80 != 0)}"
         )
 
